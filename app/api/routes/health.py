@@ -1,5 +1,3 @@
-"""Health check endpoints."""
-
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -14,7 +12,6 @@ router = APIRouter(prefix="/health", tags=["Health"])
 
 
 def get_vector_store(request: Request) -> VectorStoreService:
-    """Dependency: pull the shared VectorStoreService from app.state."""
     return request.app.state.vector_store
 
 
@@ -25,7 +22,6 @@ def get_vector_store(request: Request) -> VectorStoreService:
     description="Returns service status and version. No external dependencies checked.",
 )
 async def health_check() -> HealthResponse:
-    """Lightweight liveness probe."""
     logger.debug("Health check requested")
     return HealthResponse(
         status="healthy",
@@ -44,15 +40,12 @@ async def readiness_check(
     request: Request,
     vector_store: VectorStoreService = Depends(get_vector_store),
 ) -> ReadinessResponse:
-    """Deep readiness probe including database connectivity."""
     logger.debug("Readiness check requested")
 
-    # Qdrant
     qdrant_ok = vector_store.health_check()
     if not qdrant_ok:
         raise HTTPException(status_code=503, detail="Qdrant is not reachable")
 
-    # Postgres (via store.search on an empty namespace)
     postgres_ok = False
     try:
         store = request.app.state.store

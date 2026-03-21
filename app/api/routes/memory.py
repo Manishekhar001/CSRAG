@@ -1,5 +1,3 @@
-"""Long-term memory management endpoints."""
-
 from fastapi import APIRouter, HTTPException, Request
 
 from app.api.schemas import DeleteMemoryResponse, ErrorResponse, MemoryItem, MemoryListResponse
@@ -10,7 +8,6 @@ router = APIRouter(prefix="/memory", tags=["Memory"])
 
 
 def get_store(request: Request):
-    """Dependency: pull the shared PostgresStore from app.state."""
     return request.app.state.store
 
 
@@ -24,7 +21,6 @@ def get_store(request: Request):
     description="Return all long-term memory facts stored for a given user.",
 )
 async def list_memories(user_id: str, request: Request) -> MemoryListResponse:
-    """Retrieve all LTM facts for a user from Postgres."""
     logger.debug(f"Listing memories for user={user_id}")
     store = get_store(request)
 
@@ -55,7 +51,6 @@ async def list_memories(user_id: str, request: Request) -> MemoryListResponse:
     description="Delete all long-term memory facts for a given user. This is irreversible.",
 )
 async def delete_memories(user_id: str, request: Request) -> DeleteMemoryResponse:
-    """Delete all LTM facts for a user from Postgres."""
     logger.warning(f"Deleting all memories for user={user_id}")
     store = get_store(request)
 

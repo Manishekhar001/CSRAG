@@ -1,15 +1,3 @@
-"""SRAG verifier module.
-
-Two independent LLM judges:
-  1. SupportVerifier — checks if the answer is factually grounded in the context.
-     Returns: fully_supported | partially_supported | no_support + evidence quotes.
-
-  2. UsefulnessVerifier — checks if the grounded answer actually answers the question.
-     Returns: useful | not_useful + reason.
-
-Both are productionisations of the is_sup / is_use nodes from iteration_7.ipynb.
-"""
-
 from functools import lru_cache
 from typing import Literal
 
@@ -22,17 +10,10 @@ from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-
-# ------------------------------------------------------------------
-# Support verification schema + prompt
-# ------------------------------------------------------------------
-
 SupportVerdict = Literal["fully_supported", "partially_supported", "no_support"]
 
 
 class SupportDecision(BaseModel):
-    """LLM decision on whether the answer is grounded in context."""
-
     verdict: SupportVerdict = Field(
         ...,
         description=(
@@ -70,17 +51,10 @@ _SUPPORT_PROMPT = ChatPromptTemplate.from_messages(
     ]
 )
 
-
-# ------------------------------------------------------------------
-# Usefulness verification schema + prompt
-# ------------------------------------------------------------------
-
 UsefulnessVerdict = Literal["useful", "not_useful"]
 
 
 class UsefulnessDecision(BaseModel):
-    """LLM decision on whether the answer is useful to the user."""
-
     verdict: UsefulnessVerdict = Field(
         ...,
         description=(
@@ -107,11 +81,6 @@ _USEFULNESS_PROMPT = ChatPromptTemplate.from_messages(
     ]
 )
 
-
-# ------------------------------------------------------------------
-# Revise answer prompt
-# ------------------------------------------------------------------
-
 _REVISE_PROMPT = ChatPromptTemplate.from_messages(
     [
         (
@@ -131,13 +100,7 @@ _REVISE_PROMPT = ChatPromptTemplate.from_messages(
 )
 
 
-# ------------------------------------------------------------------
-# Service class
-# ------------------------------------------------------------------
-
 class SRAGVerifier:
-    """Runs support + usefulness verification and answer revision."""
-
     def __init__(self) -> None:
         settings = get_settings()
         llm = ChatGroq(
@@ -145,30 +108,14 @@ class SRAGVerifier:
             temperature=settings.llm_temperature,
             api_key=settings.groq_api_key,
         )
-
-        self._support_chain = _SUPPORT_PROMPT | llm.with_structured_output(
-            SupportDecision
-        )
-        self._usefulness_chain = _USEFULNESS_PROMPT | llm.with_structured_output(
-            UsefulnessDecision
-        )
+        self._support_chain = _SUPPORT_PROMPT | llm.with_structured_output(SupportDecision)
+        self._usefulness_chain = _USEFULNESS_PROMPT | llm.with_structured_output(UsefulnessDecision)
         self._revise_chain = _REVISE_PROMPT | llm
-
         logger.info("SRAGVerifier ready")
 
     def verify_support(
         self, question: str, context: str, answer: str
     ) -> tuple[SupportVerdict, list[str]]:
-        """Check factual grounding of the answer against the context.
-
-        Args:
-            question: Original user question.
-            context: Refined context used for generation.
-            answer: Generated answer to verify.
-
-        Returns:
-            Tuple of (verdict, evidence_quotes).
-        """
         logger.debug("Verifying answer support...")
         try:
             result: SupportDecision = self._support_chain.invoke(
@@ -186,15 +133,6 @@ class SRAGVerifier:
     def verify_usefulness(
         self, question: str, answer: str
     ) -> tuple[UsefulnessVerdict, str]:
-        """Check whether the answer is useful to the user.
-
-        Args:
-            question: Original user question.
-            answer: Generated (and possibly revised) answer.
-
-        Returns:
-            Tuple of (verdict, reason).
-        """
         logger.debug("Verifying answer usefulness...")
         try:
             result: UsefulnessDecision = self._usefulness_chain.invoke(
@@ -206,19 +144,7 @@ class SRAGVerifier:
             logger.error(f"Usefulness verification failed: {e}")
             return "useful", "Verification error — accepting answer as-is."
 
-    def revise_answer(
-        self, question: str, context: str, answer: str
-    ) -> str:
-        """Rewrite the answer to remove unsupported claims.
-
-        Args:
-            question: Original user question.
-            context: Refined context used for generation.
-            answer: Answer that failed the support check.
-
-        Returns:
-            Revised answer string.
-        """
+    def revise_answer(self, question: str, context: str, answer: str) -> str:
         logger.info("Revising answer to improve factual grounding...")
         try:
             result = self._revise_chain.invoke(
@@ -234,5 +160,4 @@ class SRAGVerifier:
 
 @lru_cache
 def get_srag_verifier() -> SRAGVerifier:
-    """Return a cached :class:`SRAGVerifier` instance."""
     return SRAGVerifier()

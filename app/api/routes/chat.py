@@ -1,5 +1,3 @@
-"""Chat endpoints — the main CSRAG query interface."""
-
 import time
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -19,7 +17,6 @@ router = APIRouter(prefix="/chat", tags=["Chat"])
 
 
 def get_engine(request: Request) -> CSRAGEngine:
-    """Dependency: pull the shared CSRAGEngine from app.state."""
     return request.app.state.engine
 
 
@@ -42,7 +39,6 @@ async def chat(
     body: ChatRequest,
     engine: CSRAGEngine = Depends(get_engine),
 ) -> ChatResponse:
-    """Execute a full CSRAG pipeline query."""
     logger.info(
         f"Chat — thread={body.thread_id}, user={body.user_id}, "
         f"q='{body.question[:80]}'"
@@ -104,7 +100,6 @@ async def chat_stream(
     body: ChatRequest,
     engine: CSRAGEngine = Depends(get_engine),
 ) -> StreamingResponse:
-    """Stream the CSRAG answer."""
     logger.info(
         f"Chat stream — thread={body.thread_id}, user={body.user_id}, "
         f"q='{body.question[:80]}'"

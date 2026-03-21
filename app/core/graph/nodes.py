@@ -1,29 +1,3 @@
-"""All LangGraph graph nodes for the CSRAG pipeline.
-
-Each node is a pure function:
-    (state: CSRAGState, ...) -> dict   # partial state update
-
-Nodes that need the Postgres store receive it as a keyword-only argument
-injected by LangGraph when the graph is compiled with store=<PostgresStore>.
-
-Node order in the graph:
-  START
-    → ltm_remember
-    → decide_retrieval
-        → [need_retrieval=False] generate_direct → stm_summarize → END
-        → [need_retrieval=True]  retrieve_docs
-            → evaluate_docs (CRAG)
-                → [CORRECT]            refine_context
-                → [AMBIGUOUS/INCORRECT] rewrite_query → web_search → refine_context
-            → refine_context
-            → generate_answer
-            → verify_support (SRAG)
-                → [not fully_supported + retries < max] revise_answer → verify_support (loop)
-                → [fully_supported or max retries]     verify_usefulness
-                    → [not_useful + rewrite_tries < max] rewrite_question → retrieve_docs (loop)
-                    → [useful or max retries]            stm_summarize → END
-"""
-
 import re
 from typing import Literal
 
@@ -48,10 +22,6 @@ logger = get_logger(__name__)
 settings = get_settings()
 
 
-# ======================================================================
-# Shared LLM (chat)
-# ======================================================================
-
 def _get_chat_llm() -> ChatGroq:
     return ChatGroq(
         model=settings.llm_model,
@@ -59,10 +29,6 @@ def _get_chat_llm() -> ChatGroq:
         api_key=settings.groq_api_key,
     )
 
-
-# ======================================================================
-# System prompt template (injected with STM summary + LTM facts)
-# ======================================================================
 
 _SYSTEM_PROMPT_TEMPLATE = """\
 You are a knowledgeable and helpful assistant with memory capabilities.
@@ -95,52 +61,27 @@ def _build_system_prompt(ltm_context: str, summary: str) -> str:
     ).strip()
 
 
-# ======================================================================
-# Node 1: LTM remember
-# ======================================================================
-
 def ltm_remember_node(
     state: CSRAGState,
     config: RunnableConfig,
     *,
     store,
 ) -> dict:
-    """Extract and persist new facts from the latest user message.
-
-    Also reads all existing memories and stores them in state['ltm_context']
-    so downstream nodes can inject them without hitting Postgres again.
-
-    Args:
-        state: Current graph state.
-        config: LangGraph runtime config (contains user_id).
-        store: PostgresStore injected by LangGraph.
-
-    Returns:
-        Partial state update with user_id and ltm_context.
-    """
     user_id = config.get("configurable", {}).get("user_id", "default")
     ltm = get_ltm_service()
 
-    # Latest user message text
     last_human = next(
         (m for m in reversed(state["messages"]) if isinstance(m, HumanMessage)),
         None,
     )
     user_message = last_human.content if last_human else ""
 
-    # Extract + store new facts
     ltm.extract_and_store(store, user_id, user_message)
-
-    # Read back all facts for downstream use
     ltm_context = ltm.read_memories(store, user_id)
 
     logger.info(f"LTM remember done for user={user_id}")
     return {"user_id": user_id, "ltm_context": ltm_context}
 
-
-# ======================================================================
-# Node 2: Decide retrieval
-# ======================================================================
 
 class RetrieveDecision(BaseModel):
     should_retrieve: bool = Field(
@@ -169,14 +110,6 @@ _DECIDE_RETRIEVAL_PROMPT = ChatPromptTemplate.from_messages(
 
 
 def decide_retrieval_node(state: CSRAGState) -> dict:
-    """Decide whether to retrieve documents or answer directly.
-
-    Args:
-        state: Current graph state.
-
-    Returns:
-        Partial state update with question, need_retrieval, retrieval_query.
-    """
     last_human = next(
         (m for m in reversed(state["messages"]) if isinstance(m, HumanMessage)),
         None,
@@ -197,15 +130,11 @@ def decide_retrieval_node(state: CSRAGState) -> dict:
     return {
         "question": question,
         "need_retrieval": need_retrieval,
-        "retrieval_query": question,  # default; may be overwritten by rewrite nodes
+        "retrieval_query": question,
         "rewrite_tries": state.get("rewrite_tries", 0),
         "retries": state.get("retries", 0),
     }
 
-
-# ======================================================================
-# Node 3: Generate direct (no retrieval)
-# ======================================================================
 
 _DIRECT_PROMPT = ChatPromptTemplate.from_messages(
     [
@@ -222,24 +151,14 @@ _DIRECT_PROMPT = ChatPromptTemplate.from_messages(
 
 
 def generate_direct_node(state: CSRAGState) -> dict:
-    """Generate an answer without retrieval (general knowledge path).
-
-    Args:
-        state: Current graph state.
-
-    Returns:
-        Partial state update with answer and issup/isuse set to accepted values.
-    """
     llm = _get_chat_llm()
     system_msg = _build_system_prompt(
         state.get("ltm_context", ""),
         state.get("summary", ""),
     )
-
     messages = [SystemMessage(content=system_msg)] + list(state["messages"])
     response = llm.invoke(messages)
     answer = response.content
-
     logger.info("generate_direct completed")
     return {
         "answer": answer,
@@ -250,20 +169,7 @@ def generate_direct_node(state: CSRAGState) -> dict:
     }
 
 
-# ======================================================================
-# Node 4: Retrieve docs
-# ======================================================================
-
 def retrieve_docs_node(state: CSRAGState, *, vector_store: VectorStoreService) -> dict:
-    """Retrieve top-k documents from Qdrant.
-
-    Args:
-        state: Current graph state.
-        vector_store: Injected VectorStoreService instance.
-
-    Returns:
-        Partial state update with docs.
-    """
     query = state.get("retrieval_query") or state["question"]
     logger.info(f"Retrieving docs for: '{query[:80]}'")
     docs = vector_store.search(query, k=settings.retrieval_k)
@@ -271,19 +177,7 @@ def retrieve_docs_node(state: CSRAGState, *, vector_store: VectorStoreService) -
     return {"docs": docs}
 
 
-# ======================================================================
-# Node 5: Evaluate docs (CRAG)
-# ======================================================================
-
 def evaluate_docs_node(state: CSRAGState) -> dict:
-    """Score each retrieved doc and produce a CRAG verdict.
-
-    Args:
-        state: Current graph state.
-
-    Returns:
-        Partial state update with crag_verdict, crag_reason, good_docs.
-    """
     evaluator = get_crag_evaluator()
     verdict, reason, good_docs = evaluator.evaluate(
         question=state["question"],
@@ -296,56 +190,20 @@ def evaluate_docs_node(state: CSRAGState) -> dict:
     }
 
 
-# ======================================================================
-# Node 6: Rewrite query (CRAG — non-CORRECT path)
-# ======================================================================
-
 def rewrite_query_node(state: CSRAGState) -> dict:
-    """Rewrite the user question into an optimised web-search query.
-
-    Args:
-        state: Current graph state.
-
-    Returns:
-        Partial state update with web_query.
-    """
     svc = get_web_search_service()
     web_query = svc.rewrite_query(state["question"])
     return {"web_query": web_query}
 
 
-# ======================================================================
-# Node 7: Web search (CRAG)
-# ======================================================================
-
 def web_search_node(state: CSRAGState) -> dict:
-    """Execute a Tavily web search using the rewritten query.
-
-    Args:
-        state: Current graph state.
-
-    Returns:
-        Partial state update with web_docs.
-    """
     svc = get_web_search_service()
     query = state.get("web_query") or state["question"]
     web_docs = svc.search(query)
     return {"web_docs": web_docs}
 
 
-# ======================================================================
-# Node 8: Refine context (sentence-level filter)
-# ======================================================================
-
 def _decompose_to_sentences(text: str) -> list[str]:
-    """Split text into atomic sentences.
-
-    Args:
-        text: Raw context string.
-
-    Returns:
-        List of non-trivial sentences (> 20 chars).
-    """
     text = re.sub(r"\s+", " ", text).strip()
     sentences = re.split(r"(?<=[.!?])\s+", text)
     return [s.strip() for s in sentences if len(s.strip()) > 20]
@@ -373,22 +231,6 @@ _FILTER_PROMPT = ChatPromptTemplate.from_messages(
 
 
 def refine_context_node(state: CSRAGState) -> dict:
-    """Sentence-level context refinement.
-
-    Merges internal and web docs based on CRAG verdict, then filters at
-    sentence level using an LLM keep/drop judge.
-
-    Verdict → docs used:
-      CORRECT   → good_docs only
-      INCORRECT → web_docs only
-      AMBIGUOUS → good_docs + web_docs
-
-    Args:
-        state: Current graph state.
-
-    Returns:
-        Partial state update with strips, kept_strips, refined_context.
-    """
     verdict = state.get("crag_verdict", "CORRECT")
     good_docs = state.get("good_docs", [])
     web_docs = state.get("web_docs", [])
@@ -397,18 +239,14 @@ def refine_context_node(state: CSRAGState) -> dict:
         docs_to_use = good_docs
     elif verdict == "INCORRECT":
         docs_to_use = web_docs
-    else:  # AMBIGUOUS
+    else:
         docs_to_use = good_docs + web_docs
 
     raw_context = "\n\n".join(d.page_content for d in docs_to_use).strip()
 
     if not raw_context:
         logger.warning("refine_context: empty context — skipping sentence filter")
-        return {
-            "strips": [],
-            "kept_strips": [],
-            "refined_context": "",
-        }
+        return {"strips": [], "kept_strips": [], "refined_context": ""}
 
     strips = _decompose_to_sentences(raw_context)
 
@@ -425,23 +263,15 @@ def refine_context_node(state: CSRAGState) -> dict:
                 kept.append(sentence)
         except Exception as e:
             logger.error(f"Sentence filter error: {e}")
-            kept.append(sentence)  # keep on error to avoid empty context
+            kept.append(sentence)
 
     refined_context = "\n".join(kept)
     logger.info(
         f"refine_context: {len(strips)} strips → {len(kept)} kept "
         f"(verdict={verdict})"
     )
-    return {
-        "strips": strips,
-        "kept_strips": kept,
-        "refined_context": refined_context,
-    }
+    return {"strips": strips, "kept_strips": kept, "refined_context": refined_context}
 
-
-# ======================================================================
-# Node 9: Generate answer
-# ======================================================================
 
 _RAG_PROMPT = ChatPromptTemplate.from_messages(
     [
@@ -459,22 +289,11 @@ _RAG_PROMPT = ChatPromptTemplate.from_messages(
 
 
 def generate_answer_node(state: CSRAGState) -> dict:
-    """Generate the final answer from the refined context.
-
-    Injects both the STM summary and LTM facts into the system prompt.
-
-    Args:
-        state: Current graph state.
-
-    Returns:
-        Partial state update with answer.
-    """
     llm = _get_chat_llm()
     system_prompt = _build_system_prompt(
         state.get("ltm_context", ""),
         state.get("summary", ""),
     )
-
     response = (_RAG_PROMPT | llm).invoke(
         {
             "system_prompt": system_prompt,
@@ -487,19 +306,7 @@ def generate_answer_node(state: CSRAGState) -> dict:
     return {"answer": answer}
 
 
-# ======================================================================
-# Node 10: Verify support (SRAG)
-# ======================================================================
-
 def verify_support_node(state: CSRAGState) -> dict:
-    """Check factual grounding of the answer.
-
-    Args:
-        state: Current graph state.
-
-    Returns:
-        Partial state update with issup and evidence.
-    """
     verifier = get_srag_verifier()
     verdict, evidence = verifier.verify_support(
         question=state["question"],
@@ -509,19 +316,7 @@ def verify_support_node(state: CSRAGState) -> dict:
     return {"issup": verdict, "evidence": evidence}
 
 
-# ======================================================================
-# Node 11: Revise answer (SRAG)
-# ======================================================================
-
 def revise_answer_node(state: CSRAGState) -> dict:
-    """Rewrite the answer to remove unsupported claims.
-
-    Args:
-        state: Current graph state.
-
-    Returns:
-        Partial state update with revised answer and incremented retries.
-    """
     verifier = get_srag_verifier()
     revised = verifier.revise_answer(
         question=state["question"],
@@ -533,19 +328,7 @@ def revise_answer_node(state: CSRAGState) -> dict:
     return {"answer": revised, "retries": new_retries}
 
 
-# ======================================================================
-# Node 12: Verify usefulness (SRAG)
-# ======================================================================
-
 def verify_usefulness_node(state: CSRAGState) -> dict:
-    """Check whether the answer actually helps the user.
-
-    Args:
-        state: Current graph state.
-
-    Returns:
-        Partial state update with isuse and use_reason.
-    """
     verifier = get_srag_verifier()
     verdict, reason = verifier.verify_usefulness(
         question=state["question"],
@@ -553,10 +336,6 @@ def verify_usefulness_node(state: CSRAGState) -> dict:
     )
     return {"isuse": verdict, "use_reason": reason}
 
-
-# ======================================================================
-# Node 13: Rewrite question (SRAG — not_useful path)
-# ======================================================================
 
 class RewrittenQuestion(BaseModel):
     query: str = Field(
@@ -582,14 +361,6 @@ _REWRITE_QUESTION_PROMPT = ChatPromptTemplate.from_messages(
 
 
 def rewrite_question_node(state: CSRAGState) -> dict:
-    """Reformulate the question for a better retrieval attempt.
-
-    Args:
-        state: Current graph state.
-
-    Returns:
-        Partial state update with retrieval_query and incremented rewrite_tries.
-    """
     llm = _get_chat_llm()
     chain = _REWRITE_QUESTION_PROMPT | llm.with_structured_output(RewrittenQuestion)
     try:
@@ -604,23 +375,7 @@ def rewrite_question_node(state: CSRAGState) -> dict:
     return {"retrieval_query": new_query, "rewrite_tries": new_tries}
 
 
-# ======================================================================
-# Node 14: STM summarize
-# ======================================================================
-
 def stm_summarize_node(state: CSRAGState) -> dict:
-    """Append the assistant answer to messages, then optionally summarise.
-
-    Appends the generated answer as an AIMessage, then checks if the total
-    message count exceeds the STM threshold. If so, summarises and prunes.
-
-    Args:
-        state: Current graph state.
-
-    Returns:
-        Partial state update with messages (including new AIMessage + any
-        RemoveMessage ops) and possibly an updated summary.
-    """
     answer = state.get("answer", "")
     ai_msg = AIMessage(content=answer)
 
@@ -633,61 +388,28 @@ def stm_summarize_node(state: CSRAGState) -> dict:
             messages=all_messages,
             existing_summary=state.get("summary", ""),
         )
-        return {
-            "messages": [ai_msg] + remove_ops,
-            "summary": new_summary,
-        }
+        return {"messages": [ai_msg] + remove_ops, "summary": new_summary}
 
     return {"messages": [ai_msg]}
 
 
-# ======================================================================
-# Routing functions (conditional edges)
-# ======================================================================
-
 def route_after_decide(
     state: CSRAGState,
 ) -> Literal["generate_direct", "retrieve_docs"]:
-    """Route after decide_retrieval node.
-
-    Args:
-        state: Current graph state.
-
-    Returns:
-        Next node name.
-    """
     return "retrieve_docs" if state["need_retrieval"] else "generate_direct"
 
 
 def route_after_crag(
     state: CSRAGState,
 ) -> Literal["refine_context", "rewrite_query"]:
-    """Route after evaluate_docs node.
-
-    Args:
-        state: Current graph state.
-
-    Returns:
-        'refine_context' if CORRECT, 'rewrite_query' otherwise.
-    """
     return "refine_context" if state["crag_verdict"] == "CORRECT" else "rewrite_query"
 
 
 def route_after_support(
     state: CSRAGState,
 ) -> Literal["revise_answer", "verify_usefulness"]:
-    """Route after verify_support node.
-
-    Args:
-        state: Current graph state.
-
-    Returns:
-        'revise_answer' if not fully supported and retries remain,
-        'verify_usefulness' otherwise.
-    """
     issup = state.get("issup", "fully_supported")
     retries = state.get("retries", 0)
-
     if issup != "fully_supported" and retries < settings.srag_max_retries:
         return "revise_answer"
     return "verify_usefulness"
@@ -696,18 +418,8 @@ def route_after_support(
 def route_after_usefulness(
     state: CSRAGState,
 ) -> Literal["rewrite_question", "stm_summarize"]:
-    """Route after verify_usefulness node.
-
-    Args:
-        state: Current graph state.
-
-    Returns:
-        'rewrite_question' if not useful and rewrite budget remains,
-        'stm_summarize' otherwise (accept the answer).
-    """
     isuse = state.get("isuse", "useful")
     rewrite_tries = state.get("rewrite_tries", 0)
-
     if isuse == "not_useful" and rewrite_tries < settings.max_rewrite_tries:
         return "rewrite_question"
     return "stm_summarize"

@@ -1,12 +1,6 @@
-"""Document management endpoints."""
-
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 
-from app.api.schemas import (
-    CollectionInfoResponse,
-    DocumentUploadResponse,
-    ErrorResponse,
-)
+from app.api.schemas import CollectionInfoResponse, DocumentUploadResponse, ErrorResponse
 from app.core.document_processor import DocumentProcessor
 from app.core.vector_store import VectorStoreService
 from app.utils.logger import get_logger
@@ -16,7 +10,6 @@ router = APIRouter(prefix="/documents", tags=["Documents"])
 
 
 def get_vector_store(request: Request) -> VectorStoreService:
-    """Dependency: pull the shared VectorStoreService from app.state."""
     return request.app.state.vector_store
 
 
@@ -37,7 +30,6 @@ async def upload_document(
     file: UploadFile = File(..., description="Document to upload (PDF, TXT, CSV)"),
     vector_store: VectorStoreService = Depends(get_vector_store),
 ) -> DocumentUploadResponse:
-    """Process and index an uploaded document."""
     logger.info(f"Document upload: {file.filename}")
 
     if not file.filename:
@@ -47,11 +39,7 @@ async def upload_document(
         processor = DocumentProcessor()
         chunks = processor.process_upload(file.file, file.filename)
         document_ids = vector_store.add_documents(chunks)
-
-        logger.info(
-            f"Indexed {file.filename}: {len(chunks)} chunks, "
-            f"{len(document_ids)} IDs"
-        )
+        logger.info(f"Indexed {file.filename}: {len(chunks)} chunks, {len(document_ids)} IDs")
         return DocumentUploadResponse(
             message="Document uploaded and indexed successfully",
             filename=file.filename,
@@ -63,10 +51,7 @@ async def upload_document(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Upload error: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to process document: {str(e)}",
-        )
+        raise HTTPException(status_code=500, detail=f"Failed to process document: {str(e)}")
 
 
 @router.get(
@@ -78,7 +63,6 @@ async def upload_document(
 async def collection_info(
     vector_store: VectorStoreService = Depends(get_vector_store),
 ) -> CollectionInfoResponse:
-    """Return Qdrant collection metadata."""
     try:
         info = vector_store.get_collection_info()
         return CollectionInfoResponse(
@@ -88,10 +72,7 @@ async def collection_info(
         )
     except Exception as e:
         logger.error(f"Collection info error: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to retrieve collection info: {str(e)}",
-        )
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve collection info: {str(e)}")
 
 
 @router.delete(
@@ -106,14 +87,10 @@ async def collection_info(
 async def delete_collection(
     vector_store: VectorStoreService = Depends(get_vector_store),
 ) -> dict:
-    """Delete the entire Qdrant collection."""
     logger.warning("Collection deletion requested")
     try:
         vector_store.delete_collection()
         return {"message": "Collection deleted successfully"}
     except Exception as e:
         logger.error(f"Collection deletion error: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to delete collection: {str(e)}",
-        )
+        raise HTTPException(status_code=500, detail=f"Failed to delete collection: {str(e)}")

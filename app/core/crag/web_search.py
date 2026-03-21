@@ -1,10 +1,3 @@
-"""CRAG web-search module — Tavily integration.
-
-Handles both:
-  1. Query rewriting — converts the user question into a focused web-search query.
-  2. Web document fetching — calls Tavily and wraps results as LangChain Documents.
-"""
-
 from functools import lru_cache
 
 from langchain_community.tools.tavily_search import TavilySearchResults
@@ -19,17 +12,8 @@ from app.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-# ------------------------------------------------------------------
-# Query rewrite schema + prompt
-# ------------------------------------------------------------------
-
 class WebQuery(BaseModel):
-    """Rewritten web-search query."""
-
-    query: str = Field(
-        ...,
-        description="Focused web-search query (6–14 keywords).",
-    )
+    query: str = Field(..., description="Focused web-search query (6–14 keywords).")
 
 
 _REWRITE_PROMPT = ChatPromptTemplate.from_messages(
@@ -49,13 +33,7 @@ _REWRITE_PROMPT = ChatPromptTemplate.from_messages(
 )
 
 
-# ------------------------------------------------------------------
-# Service class
-# ------------------------------------------------------------------
-
 class WebSearchService:
-    """Rewrites queries and fetches web documents via Tavily."""
-
     def __init__(self) -> None:
         settings = get_settings()
 
@@ -76,28 +54,12 @@ class WebSearchService:
         )
 
     def rewrite_query(self, question: str) -> str:
-        """Rewrite a question into an optimised web-search query.
-
-        Args:
-            question: Original user question.
-
-        Returns:
-            Rewritten query string.
-        """
         logger.debug(f"Rewriting query for: {question[:80]}")
         result: WebQuery = self._rewrite_chain.invoke({"question": question})
         logger.info(f"Rewritten web query: {result.query}")
         return result.query
 
     def search(self, query: str) -> list[Document]:
-        """Execute a Tavily web search and return results as Documents.
-
-        Args:
-            query: Search query string.
-
-        Returns:
-            List of :class:`Document` objects with content and metadata.
-        """
         logger.info(f"Tavily web search: '{query}'")
         try:
             results = self._tavily.invoke({"query": query})
@@ -124,5 +86,4 @@ class WebSearchService:
 
 @lru_cache
 def get_web_search_service() -> WebSearchService:
-    """Return a cached :class:`WebSearchService` instance."""
     return WebSearchService()

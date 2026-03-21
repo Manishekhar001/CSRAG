@@ -1,13 +1,3 @@
-"""CRAG document evaluator.
-
-Scores each retrieved chunk 0–1 and classifies the batch as:
-    CORRECT   — at least one chunk scored >= UPPER_TH (0.7)
-    INCORRECT — every chunk scored < LOWER_TH (0.3)
-    AMBIGUOUS — anything in between
-
-This is a direct productionisation of the scoring logic in 6_ambiguous.ipynb.
-"""
-
 from functools import lru_cache
 from typing import Literal
 
@@ -22,13 +12,7 @@ from app.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-# ------------------------------------------------------------------
-# Pydantic schema for structured LLM output
-# ------------------------------------------------------------------
-
 class DocEvalScore(BaseModel):
-    """LLM-graded relevance score for a single retrieved chunk."""
-
     score: float = Field(
         ...,
         ge=0.0,
@@ -37,10 +21,6 @@ class DocEvalScore(BaseModel):
     )
     reason: str = Field(..., description="Short justification for the score.")
 
-
-# ------------------------------------------------------------------
-# Prompt
-# ------------------------------------------------------------------
 
 _DOC_EVAL_PROMPT = ChatPromptTemplate.from_messages(
     [
@@ -62,21 +42,10 @@ _DOC_EVAL_PROMPT = ChatPromptTemplate.from_messages(
     ]
 )
 
-
-# ------------------------------------------------------------------
-# Verdict type
-# ------------------------------------------------------------------
-
 CRAGVerdict = Literal["CORRECT", "AMBIGUOUS", "INCORRECT"]
 
 
-# ------------------------------------------------------------------
-# Service class
-# ------------------------------------------------------------------
-
 class CRAGEvaluator:
-    """Evaluates retrieved document chunks and produces a CRAG verdict."""
-
     def __init__(self) -> None:
         settings = get_settings()
         self._upper_th = settings.crag_upper_threshold
@@ -97,16 +66,6 @@ class CRAGEvaluator:
     def evaluate(
         self, question: str, docs: list[Document]
     ) -> tuple[CRAGVerdict, str, list[Document]]:
-        """Score each document and return the batch verdict.
-
-        Args:
-            question: The user's question.
-            docs: Retrieved documents to evaluate.
-
-        Returns:
-            Tuple of (verdict, reason, good_docs) where ``good_docs`` contains
-            all documents that scored above ``lower_th``.
-        """
         if not docs:
             logger.warning("CRAGEvaluator.evaluate called with empty docs list")
             return "INCORRECT", "No documents retrieved", []
@@ -120,16 +79,13 @@ class CRAGEvaluator:
                     {"question": question, "chunk": doc.page_content}
                 )
                 scores.append(result.score)
-                logger.debug(
-                    f"Chunk scored {result.score:.2f} — {result.reason[:80]}"
-                )
+                logger.debug(f"Chunk scored {result.score:.2f} — {result.reason[:80]}")
                 if result.score > self._lower_th:
                     good_docs.append(doc)
             except Exception as e:
                 logger.error(f"Doc eval failed for chunk: {e}")
                 scores.append(0.0)
 
-        # Classify verdict
         if any(s >= self._upper_th for s in scores):
             verdict: CRAGVerdict = "CORRECT"
             reason = (
@@ -156,5 +112,4 @@ class CRAGEvaluator:
 
 @lru_cache
 def get_crag_evaluator() -> CRAGEvaluator:
-    """Return a cached :class:`CRAGEvaluator` instance."""
     return CRAGEvaluator()

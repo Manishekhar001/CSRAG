@@ -1,16 +1,3 @@
-"""FastAPI application entry point.
-
-Startup sequence:
-  1. Load .env → Settings
-  2. Setup logging
-  3. Connect Qdrant (VectorStoreService)
-  4. Open PostgresStore (LTM)
-  5. Open PostgresSaver (STM checkpointer)
-  6. Build + compile CSRAG graph (CSRAGEngine)
-  7. Store all shared services on app.state
-  8. On shutdown: close Postgres connections cleanly
-"""
-
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
@@ -35,41 +22,28 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan — startup and shutdown."""
     setup_logging(settings.log_level)
     logger = get_logger(__name__)
     logger.info(f"Starting {settings.app_name} v{__version__}")
 
-    # ------------------------------------------------------------------
-    # 1. Qdrant vector store
-    # ------------------------------------------------------------------
     logger.info("Initialising VectorStoreService (Qdrant)...")
     app.state.vector_store = VectorStoreService()
     logger.info("VectorStoreService ready")
 
-    # ------------------------------------------------------------------
-    # 2. PostgresStore (Long-Term Memory)
-    # ------------------------------------------------------------------
     logger.info("Connecting PostgresStore (LTM)...")
     store = PostgresStore.from_conn_string(settings.postgres_uri)
     store.__enter__()
-    store.setup()  # idempotent — creates tables if not present
+    store.setup()
     app.state.store = store
     logger.info("PostgresStore (LTM) ready")
 
-    # ------------------------------------------------------------------
-    # 3. PostgresSaver (Short-Term Memory checkpointer)
-    # ------------------------------------------------------------------
     logger.info("Connecting PostgresSaver (STM checkpointer)...")
     checkpointer = PostgresSaver.from_conn_string(settings.postgres_uri)
     checkpointer.__enter__()
-    checkpointer.setup()  # idempotent
+    checkpointer.setup()
     app.state.checkpointer = checkpointer
     logger.info("PostgresSaver (STM checkpointer) ready")
 
-    # ------------------------------------------------------------------
-    # 4. CSRAG Engine (compiles the full LangGraph graph)
-    # ------------------------------------------------------------------
     logger.info("Compiling CSRAG graph...")
     app.state.engine = CSRAGEngine(
         vector_store=app.state.vector_store,
@@ -80,9 +54,6 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # ------------------------------------------------------------------
-    # Shutdown
-    # ------------------------------------------------------------------
     logger.info("Shutting down — closing Postgres connections...")
     try:
         checkpointer.__exit__(None, None, None)
@@ -94,10 +65,6 @@ async def lifespan(app: FastAPI):
         logger.warning(f"Store close error: {e}")
     logger.info("Shutdown complete")
 
-
-# ----------------------------------------------------------------------
-# FastAPI application
-# ----------------------------------------------------------------------
 
 app = FastAPI(
     title=settings.app_name,
@@ -126,9 +93,6 @@ A production-grade conversational RAG system combining:
     lifespan=lifespan,
 )
 
-# ----------------------------------------------------------------------
-# CORS middleware
-# ----------------------------------------------------------------------
 _raw_origins = [o.strip() for o in settings.allowed_origins.split(",") if o.strip()]
 allowed_origins: list[str] = _raw_origins if _raw_origins != ["*"] else ["*"]
 
@@ -140,21 +104,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ----------------------------------------------------------------------
-# Routers
-# ----------------------------------------------------------------------
 app.include_router(health.router)
 app.include_router(documents.router)
 app.include_router(chat.router)
 app.include_router(memory.router)
 
 
-# ----------------------------------------------------------------------
-# Root
-# ----------------------------------------------------------------------
 @app.get("/", tags=["Root"])
 async def root():
-    """Root endpoint — service info."""
     return {
         "service": settings.app_name,
         "version": __version__,
@@ -162,12 +119,8 @@ async def root():
     }
 
 
-# ----------------------------------------------------------------------
-# Global exception handler
-# ----------------------------------------------------------------------
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    """Catch-all handler — logs and returns a structured 500."""
     logger = get_logger(__name__)
     logger.error(f"Unhandled exception: {exc}", exc_info=True)
     return JSONResponse(
@@ -179,9 +132,6 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 
-# ----------------------------------------------------------------------
-# Dev entry point
-# ----------------------------------------------------------------------
 if __name__ == "__main__":
     import uvicorn
 
