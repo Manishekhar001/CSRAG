@@ -31,15 +31,15 @@ async def lifespan(app: FastAPI):
     logger.info("VectorStoreService ready")
 
     logger.info("Connecting PostgresStore (LTM)...")
-    store = PostgresStore.from_conn_string(settings.postgres_uri)
-    store.__enter__()
+    store_cm = PostgresStore.from_conn_string(settings.postgres_uri)
+    store = store_cm.__enter__()
     store.setup()
     app.state.store = store
     logger.info("PostgresStore (LTM) ready")
 
     logger.info("Connecting PostgresSaver (STM checkpointer)...")
-    checkpointer = PostgresSaver.from_conn_string(settings.postgres_uri)
-    checkpointer.__enter__()
+    checkpointer_cm = PostgresSaver.from_conn_string(settings.postgres_uri)
+    checkpointer = checkpointer_cm.__enter__()
     checkpointer.setup()
     app.state.checkpointer = checkpointer
     logger.info("PostgresSaver (STM checkpointer) ready")
@@ -56,11 +56,11 @@ async def lifespan(app: FastAPI):
 
     logger.info("Shutting down — closing Postgres connections...")
     try:
-        checkpointer.__exit__(None, None, None)
+        checkpointer_cm.__exit__(None, None, None)
     except Exception as e:
         logger.warning(f"Checkpointer close error: {e}")
     try:
-        store.__exit__(None, None, None)
+        store_cm.__exit__(None, None, None)
     except Exception as e:
         logger.warning(f"Store close error: {e}")
     logger.info("Shutdown complete")
