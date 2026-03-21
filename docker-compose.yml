@@ -1,0 +1,44 @@
+services:
+
+  # ----------------------------------------------------------------------------
+  # PostgreSQL — LTM (PostgresStore) + STM checkpointer (PostgresSaver)
+  # Mapped to host port 5442 to avoid conflict with any local Postgres on 5432.
+  # ----------------------------------------------------------------------------
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    ports:
+      - "5442:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ----------------------------------------------------------------------------
+  # CSRAG API — the FastAPI application
+  # Requires Ollama to be running on the HOST machine (not in Docker).
+  # Set OLLAMA_BASE_URL=http://host.docker.internal:11434 in .env when running
+  # inside Docker on Mac/Windows. On Linux use the host gateway IP.
+  # ----------------------------------------------------------------------------
+  csrag:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Override Postgres URI to point at the compose service name
+      POSTGRES_URI: postgresql://postgres:postgres@postgres:5432/postgres?sslmode=disable
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
