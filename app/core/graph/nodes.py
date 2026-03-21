@@ -1,7 +1,7 @@
 import re
+from functools import lru_cache
 from typing import Literal
 
-from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableConfig
@@ -22,6 +22,7 @@ logger = get_logger(__name__)
 settings = get_settings()
 
 
+@lru_cache
 def _get_chat_llm() -> ChatGroq:
     return ChatGroq(
         model=settings.llm_model,
@@ -30,35 +31,27 @@ def _get_chat_llm() -> ChatGroq:
     )
 
 
-_SYSTEM_PROMPT_TEMPLATE = """\
-You are a knowledgeable and helpful assistant with memory capabilities.
-
-{ltm_section}
-
-{stm_section}
-
-Answer questions clearly and concisely using the provided context.
-If no context is available, use your general knowledge.
-If you don't know the answer, say so clearly.
-Do not make up information.
-"""
-
-
 def _build_system_prompt(ltm_context: str, summary: str) -> str:
-    ltm_section = (
-        f"Long-term user memory:\n{ltm_context}"
-        if ltm_context and ltm_context != "(empty)"
-        else ""
+    base = (
+        "You are a knowledgeable and helpful assistant with memory capabilities.\n\n"
+        "Answer questions clearly and concisely using the provided context.\n"
+        "If no context is available, use your general knowledge.\n"
+        "If you don't know the answer, say so clearly.\n"
+        "Do not make up information."
     )
-    stm_section = (
-        f"Recent conversation summary:\n{summary}"
-        if summary
-        else ""
-    )
-    return _SYSTEM_PROMPT_TEMPLATE.format(
-        ltm_section=ltm_section,
-        stm_section=stm_section,
-    ).strip()
+
+    sections: list[str] = []
+
+    if ltm_context and ltm_context != "(empty)":
+        sections.append(f"Long-term user memory:\n{ltm_context}")
+
+    if summary:
+        sections.append(f"Recent conversation summary:\n{summary}")
+
+    if sections:
+        return base + "\n\n" + "\n\n".join(sections)
+
+    return base
 
 
 def ltm_remember_node(
@@ -131,23 +124,7 @@ def decide_retrieval_node(state: CSRAGState) -> dict:
         "question": question,
         "need_retrieval": need_retrieval,
         "retrieval_query": question,
-        "rewrite_tries": state.get("rewrite_tries", 0),
-        "retries": state.get("retries", 0),
     }
-
-
-_DIRECT_PROMPT = ChatPromptTemplate.from_messages(
-    [
-        (
-            "system",
-            "Answer using your general knowledge.\n"
-            "If the question requires specific company or domain information, say: "
-            "'I don't have enough context to answer that specifically.'\n"
-            "Do not make up information.",
-        ),
-        ("human", "{question}"),
-    ]
-)
 
 
 def generate_direct_node(state: CSRAGState) -> dict:

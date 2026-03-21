@@ -88,14 +88,16 @@ class CSRAGEngine:
             f"q='{question[:80]}'"
         )
         config = self._build_config(thread_id, user_id)
-        async for chunk in self._graph.astream(
+        last_answer = ""
+        async for state in self._graph.astream(
             self._initial_state(question),
             config,
             stream_mode="values",
         ):
-            answer = chunk.get("answer", "")
-            if answer:
+            answer = state.get("answer", "")
+            if answer and answer != last_answer:
                 yield answer
+                last_answer = answer
 
     def health_check(self) -> bool:
         return self._graph is not None

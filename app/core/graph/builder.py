@@ -4,7 +4,6 @@ from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.store.postgres import PostgresStore
 
-from app.config import get_settings
 from app.core.graph.nodes import (
     decide_retrieval_node,
     evaluate_docs_node,
@@ -30,7 +29,6 @@ from app.core.vector_store import VectorStoreService
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
-settings = get_settings()
 
 
 def build_graph(

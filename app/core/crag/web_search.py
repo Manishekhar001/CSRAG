@@ -1,6 +1,7 @@
 from functools import lru_cache
 
 from langchain_community.tools.tavily_search import TavilySearchResults
+from langchain_community.utilities.tavily_search import TavilySearchAPIWrapper
 from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_groq import ChatGroq
@@ -44,9 +45,10 @@ class WebSearchService:
         )
         self._rewrite_chain = _REWRITE_PROMPT | llm.with_structured_output(WebQuery)
 
+        api_wrapper = TavilySearchAPIWrapper(tavily_api_key=settings.tavily_api_key)
         self._tavily = TavilySearchResults(
+            api_wrapper=api_wrapper,
             max_results=settings.tavily_max_results,
-            tavily_api_key=settings.tavily_api_key,
         )
         logger.info(
             f"WebSearchService ready — "
