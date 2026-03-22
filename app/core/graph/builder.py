@@ -1,8 +1,8 @@
 import functools
 
-from langgraph.checkpoint.postgres import PostgresSaver
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph import END, START, StateGraph
-from langgraph.store.postgres import PostgresStore
+from langgraph.store.postgres.aio import AsyncPostgresStore
 
 from app.core.graph.nodes import (
     decide_retrieval_node,
@@ -33,8 +33,8 @@ logger = get_logger(__name__)
 
 def build_graph(
     vector_store: VectorStoreService,
-    store: PostgresStore,
-    checkpointer: PostgresSaver,
+    store: AsyncPostgresStore,
+    checkpointer: AsyncPostgresSaver,
 ):
     builder = StateGraph(CSRAGState)
 

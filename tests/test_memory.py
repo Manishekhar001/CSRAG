@@ -1,6 +1,6 @@
 """Tests for memory services and endpoints."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -96,35 +96,40 @@ class TestLTMService:
                 from app.core.memory.ltm import LTMService
                 return LTMService()
 
+    def _make_store(self, search_result=None):
+        """Helper to create an async-compatible mock store."""
+        store = MagicMock()
+        store.asearch = AsyncMock(return_value=search_result or [])
+        store.aput = AsyncMock(return_value=None)
+        store.adelete = AsyncMock(return_value=None)
+        return store
+
     def test_namespace_returns_correct_tuple(self, ltm):
         """Test that namespace builds the correct tuple for a user."""
         ns = ltm._namespace("user-123")
         assert ns == ("user", "user-123", "details")
 
-    def test_read_memories_returns_empty_when_no_items(self, ltm):
+    async def test_read_memories_returns_empty_when_no_items(self, ltm):
         """Test read_memories returns '(empty)' when the store has no items."""
-        store = MagicMock()
-        store.search.return_value = []
-        result = ltm.read_memories(store, "user-123")
+        store = self._make_store(search_result=[])
+        result = await ltm.read_memories(store, "user-123")
         assert result == "(empty)"
 
-    def test_read_memories_joins_items(self, ltm):
+    async def test_read_memories_joins_items(self, ltm):
         """Test read_memories joins all stored facts into a single string."""
-        store = MagicMock()
         item1 = MagicMock()
         item1.value = {"data": "User is Nitish."}
         item2 = MagicMock()
         item2.value = {"data": "User teaches AI."}
-        store.search.return_value = [item1, item2]
+        store = self._make_store(search_result=[item1, item2])
 
-        result = ltm.read_memories(store, "user-123")
+        result = await ltm.read_memories(store, "user-123")
         assert "User is Nitish." in result
         assert "User teaches AI." in result
 
-    def test_extract_and_store_writes_new_facts(self, ltm):
+    async def test_extract_and_store_writes_new_facts(self, ltm):
         """Test that new facts are written to the store."""
-        store = MagicMock()
-        store.search.return_value = []
+        store = self._make_store(search_result=[])
 
         decision = MagicMock()
         decision.should_write = True
@@ -135,14 +140,13 @@ class TestLTMService:
         ltm._extractor = MagicMock()
         ltm._extractor.invoke.return_value = decision
 
-        written = ltm.extract_and_store(store, "user-123", "Hi, I am Nitish.")
+        written = await ltm.extract_and_store(store, "user-123", "Hi, I am Nitish.")
         assert written == 1
-        store.put.assert_called_once()
+        store.aput.assert_called_once()
 
-    def test_extract_and_store_skips_duplicate_facts(self, ltm):
+    async def test_extract_and_store_skips_duplicate_facts(self, ltm):
         """Test that duplicate facts (is_new=False) are not written."""
-        store = MagicMock()
-        store.search.return_value = []
+        store = self._make_store(search_result=[])
 
         decision = MagicMock()
         decision.should_write = True
@@ -153,14 +157,13 @@ class TestLTMService:
         ltm._extractor = MagicMock()
         ltm._extractor.invoke.return_value = decision
 
-        written = ltm.extract_and_store(store, "user-123", "I am Nitish.")
+        written = await ltm.extract_and_store(store, "user-123", "I am Nitish.")
         assert written == 0
-        store.put.assert_not_called()
+        store.aput.assert_not_called()
 
-    def test_extract_and_store_returns_zero_when_nothing_to_write(self, ltm):
+    async def test_extract_and_store_returns_zero_when_nothing_to_write(self, ltm):
         """Test that zero is returned when there is nothing memory-worthy."""
-        store = MagicMock()
-        store.search.return_value = []
+        store = self._make_store(search_result=[])
 
         decision = MagicMock()
         decision.should_write = False
@@ -168,17 +171,16 @@ class TestLTMService:
         ltm._extractor = MagicMock()
         ltm._extractor.invoke.return_value = decision
 
-        written = ltm.extract_and_store(store, "user-123", "Hello!")
+        written = await ltm.extract_and_store(store, "user-123", "Hello!")
         assert written == 0
 
-    def test_extract_and_store_returns_zero_on_llm_error(self, ltm):
+    async def test_extract_and_store_returns_zero_on_llm_error(self, ltm):
         """Test graceful error handling when LLM extraction fails."""
-        store = MagicMock()
-        store.search.return_value = []
+        store = self._make_store(search_result=[])
         ltm._extractor = MagicMock()
         ltm._extractor.invoke.side_effect = Exception("LLM error")
 
-        written = ltm.extract_and_store(store, "user-123", "Hello!")
+        written = await ltm.extract_and_store(store, "user-123", "Hello!")
         assert written == 0
 
 
@@ -215,7 +217,7 @@ class TestMemoryEndpoints:
         item = MagicMock()
         item.value = {"data": "User's name is Nitish."}
         item.key = "some-uuid"
-        mock_postgres_store.search.return_value = [item]
+        mock_postgres_store.asearch.return_value = [item]
 
         response = client.get("/memory/user-test-001")
         data = response.json()
@@ -242,19 +244,19 @@ class TestMemoryEndpoints:
         assert "message" in data
 
     def test_delete_memories_calls_store_delete(self, client, mock_postgres_store):
-        """Test that delete endpoint calls store.delete for each item."""
+        """Test that delete endpoint calls store.adelete for each item."""
         item = MagicMock()
         item.value = {"data": "Some fact."}
         item.key = "uuid-to-delete"
-        mock_postgres_store.search.return_value = [item]
+        mock_postgres_store.asearch.return_value = [item]
 
         client.delete("/memory/user-test-001")
 
-        mock_postgres_store.delete.assert_called_once()
+        mock_postgres_store.adelete.assert_called_once()
 
     def test_delete_memories_when_empty(self, client, mock_postgres_store):
         """Test deleting memories when none exist returns success."""
-        mock_postgres_store.search.return_value = []
+        mock_postgres_store.asearch.return_value = []
         response = client.delete("/memory/user-test-001")
 
         assert response.status_code == 200

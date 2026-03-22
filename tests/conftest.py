@@ -133,28 +133,30 @@ def mock_engine():
 
 @pytest.fixture
 def mock_postgres_store():
-    """Mock PostgresStore with correct context manager pattern."""
-    with patch("app.main.PostgresStore") as mock_cls:
+    """Mock AsyncPostgresStore with async context manager pattern."""
+    with patch("app.main.AsyncPostgresStore") as mock_cls:
         store_cm = MagicMock()
         store = MagicMock()
-        store.setup.return_value = None
-        store.search.return_value = []
-        store_cm.__enter__ = MagicMock(return_value=store)
-        store_cm.__exit__ = MagicMock(return_value=False)
-        mock_cls.from_conn_string.return_value = store_cm
+        store.setup = AsyncMock(return_value=None)
+        store.asearch = AsyncMock(return_value=[])
+        store.aput = AsyncMock(return_value=None)
+        store.adelete = AsyncMock(return_value=None)
+        store_cm.__aenter__ = AsyncMock(return_value=store)
+        store_cm.__aexit__ = AsyncMock(return_value=False)
+        mock_cls.from_conn_string = AsyncMock(return_value=store_cm)
         yield store
 
 
 @pytest.fixture
 def mock_postgres_saver():
-    """Mock PostgresSaver with correct context manager pattern."""
-    with patch("app.main.PostgresSaver") as mock_cls:
+    """Mock AsyncPostgresSaver with async context manager pattern."""
+    with patch("app.main.AsyncPostgresSaver") as mock_cls:
         checkpointer_cm = MagicMock()
         checkpointer = MagicMock()
-        checkpointer.setup.return_value = None
-        checkpointer_cm.__enter__ = MagicMock(return_value=checkpointer)
-        checkpointer_cm.__exit__ = MagicMock(return_value=False)
-        mock_cls.from_conn_string.return_value = checkpointer_cm
+        checkpointer.setup = AsyncMock(return_value=None)
+        checkpointer_cm.__aenter__ = AsyncMock(return_value=checkpointer)
+        checkpointer_cm.__aexit__ = AsyncMock(return_value=False)
+        mock_cls.from_conn_string = AsyncMock(return_value=checkpointer_cm)
         yield checkpointer
 
 

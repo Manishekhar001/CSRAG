@@ -1,6 +1,6 @@
 from langchain_core.messages import HumanMessage
-from langgraph.checkpoint.postgres import PostgresSaver
-from langgraph.store.postgres import PostgresStore
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from langgraph.store.postgres.aio import AsyncPostgresStore
 
 from app.config import get_settings
 from app.core.graph.builder import build_graph
@@ -17,8 +17,8 @@ class CSRAGEngine:
     def __init__(
         self,
         vector_store: VectorStoreService,
-        store: PostgresStore,
-        checkpointer: PostgresSaver,
+        store: AsyncPostgresStore,
+        checkpointer: AsyncPostgresSaver,
     ) -> None:
         self._graph = build_graph(
             vector_store=vector_store,
