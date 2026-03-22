@@ -15,7 +15,7 @@ GitHub Actions
   ├── JOB 2: Build Docker image + smoke test
   └── JOB 3: Push to Docker Hub → SSH into EC2 → docker pull + run
                                         ↓
-                              EC2 Instance (Ubuntu)
+                              EC2 Instance t3.small (Ubuntu)
                                 ├── csrag container     (port 8000)
                                 ├── postgres container  (internal)
                                 └── Ollama native       (port 11434)
@@ -25,9 +25,21 @@ Public URL: http://YOUR_EC2_PUBLIC_IP:8000
 
 ---
 
-## Step 1 — Create a Docker Hub Account and Repository
+## Embedding Model Choice
 
-Docker Hub is free and is used as the container registry (same as BasicRAG).
+This project uses **nomic-embed-text** (768 dimensions, 274MB, ~900MB RAM) instead of
+mxbai-embed-large (1024 dimensions, 670MB, ~2.5GB RAM).
+
+Reason: AWS free tier only offers t3.micro (1GB) and t3.small (2GB). mxbai-embed-large
+requires 2.5GB RAM minimum and will OOM-crash on both. nomic-embed-text fits comfortably
+on t3.small with swap space added.
+
+nomic-embed-text produces equally good embeddings for RAG — the dimension difference
+(768 vs 1024) has negligible effect on retrieval quality.
+
+---
+
+## Step 1 — Create a Docker Hub Account and Repository
 
 1. Go to https://hub.docker.com and sign up (free)
 2. Click **Create Repository**
@@ -44,14 +56,15 @@ Your image will be pushed as: `YOUR_USERNAME/csrag:latest`
 1. Go to **AWS Console → EC2 → Launch Instance**
 2. Fill in:
    - **Name**: `csrag-server`
-   - **AMI**: Ubuntu Server 24.04 LTS
-   - **Instance type**: `t3.medium` (4 GB RAM — Ollama needs minimum 4 GB)
-     - t2.micro is free tier but only 1 GB RAM — too small for Ollama
+   - **AMI**: Ubuntu Server 24.04 LTS (64-bit x86)
+   - **Instance type**: `t3.small` (2 vCPU, 2 GB RAM)
+     - t3.micro (1GB) is too small — even with swap, Ollama will be unusable
+     - t3.small (2GB) + 4GB swap = effectively 6GB — sufficient for nomic-embed-text
    - **Key pair**: Create new → name it `csrag-key` → download the `.pem` file
    - **Security group**: Allow inbound:
-     - SSH (port 22) from My IP
+     - SSH port 22 from My IP
      - Custom TCP port 8000 from Anywhere (0.0.0.0/0)
-   - **Storage**: 20 GB
+   - **Storage**: 20 GB (increase if needed for Docker images)
 
 3. Launch. Note the **Public IPv4 address**.
 
@@ -65,7 +78,35 @@ ssh -i csrag-key.pem ubuntu@YOUR_PUBLIC_IP
 
 ---
 
-## Step 4 — Install Docker on EC2
+## Step 4 — Add Swap Space (Critical for t3.small)
+
+t3.small has 2GB RAM. Adding 4GB swap gives the system 6GB effective memory,
+which is enough for nomic-embed-text + Postgres + the CSRAG container.
+
+```bash
+sudo fallocate -l 4G /swapfile
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile
+sudo swapon /swapfile
+```
+
+Make swap permanent across reboots:
+
+```bash
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+```
+
+Verify swap is active:
+
+```bash
+free -h
+```
+
+You should now see 4GB under the Swap row.
+
+---
+
+## Step 5 — Install Docker on EC2
 
 ```bash
 sudo apt-get update -y
@@ -79,11 +120,15 @@ docker --version
 
 ---
 
-## Step 5 — Install Ollama on EC2
+## Step 6 — Install Ollama on EC2
 
 ```bash
 curl -fsSL https://ollama.com/install.sh | sh
+```
 
+Configure Ollama to listen on all interfaces (required for Docker container to reach it):
+
+```bash
 sudo mkdir -p /etc/systemd/system/ollama.service.d
 sudo tee /etc/systemd/system/ollama.service.d/override.conf << 'EOF'
 [Service]
@@ -93,17 +138,20 @@ EOF
 sudo systemctl daemon-reload
 sudo systemctl restart ollama
 sleep 10
+```
 
-ollama pull mxbai-embed-large
+Pull nomic-embed-text (274MB — takes about 1 minute):
+
+```bash
+ollama pull nomic-embed-text
 ollama list
 ```
 
+You should see `nomic-embed-text` in the list.
+
 ---
 
-## Step 6 — Create the Docker Network and Start Postgres
-
-The CSRAG container and Postgres container communicate over a Docker network.
-You only do this once — Postgres data persists in a Docker volume.
+## Step 7 — Create Docker Network and Start Postgres
 
 ```bash
 docker network create csrag-net
@@ -117,11 +165,9 @@ docker run -d \
   -e POSTGRES_DB=postgres \
   -v postgres_data:/var/lib/postgresql/data \
   postgres:16
-
-docker ps
 ```
 
-Wait a few seconds, then verify Postgres is healthy:
+Verify Postgres is healthy:
 
 ```bash
 docker exec csrag-postgres pg_isready -U postgres
@@ -129,15 +175,25 @@ docker exec csrag-postgres pg_isready -U postgres
 
 ---
 
-## Step 7 — Create the .env File on EC2
+## Step 8 — Find Docker Bridge IP
 
-The `.env` lives only on the EC2. It is never in GitHub.
+```bash
+ip route | grep docker
+```
+
+Look for a line like: `172.17.0.0/16 dev docker0 ... src 172.17.0.1`
+
+The IP you need is `172.17.0.1` — this is how your CSRAG container reaches Ollama on the host.
+
+---
+
+## Step 9 — Create the .env File on EC2
 
 ```bash
 nano /home/ubuntu/.env
 ```
 
-Paste and fill in your values:
+Paste and fill in your real values:
 
 ```
 GROQ_API_KEY=your_actual_groq_key
@@ -146,8 +202,8 @@ QDRANT_API_KEY=your_actual_qdrant_key
 TAVILY_API_KEY=your_actual_tavily_key
 POSTGRES_URI=postgresql://postgres:postgres@csrag-postgres:5432/postgres?sslmode=disable
 OLLAMA_BASE_URL=http://172.17.0.1:11434
-EMBEDDING_MODEL=mxbai-embed-large
-EMBEDDING_DIMENSION=1024
+EMBEDDING_MODEL=nomic-embed-text
+EMBEDDING_DIMENSION=768
 COLLECTION_NAME=csrag_documents
 LLM_MODEL=llama-3.3-70b-versatile
 LLM_TEMPERATURE=0.0
@@ -170,19 +226,11 @@ API_PORT=8000
 
 Save: Ctrl+X → Y → Enter
 
-Note on OLLAMA_BASE_URL: `172.17.0.1` is the Docker bridge gateway — the IP that Docker containers use to reach the EC2 host. To confirm your exact IP:
-
-```bash
-ip route | grep docker
-# Look for something like: 172.17.0.0/16 dev docker0
-# The gateway is 172.17.0.1
-```
-
 ---
 
-## Step 8 — Run the App for the First Time
+## Step 10 — First Deploy
 
-Pull and run the CSRAG container manually the first time:
+After GitHub Actions pushes the image (Step 12 below), run:
 
 ```bash
 docker pull YOUR_DOCKERHUB_USERNAME/csrag:latest
@@ -203,127 +251,88 @@ docker ps
 docker logs csrag
 ```
 
-Test from EC2:
+Test it:
 
 ```bash
 curl http://localhost:8000/health
 ```
 
-Test from your local browser:
+---
 
+## Step 11 — Add GitHub Secrets
+
+Go to your GitHub repo → **Settings → Secrets and variables → Actions** → **New repository secret**.
+
+| Secret name | Value |
+|-------------|-------|
+| `DOCKERHUB_USERNAME` | your Docker Hub username |
+| `DOCKERHUB_TOKEN` | Docker Hub access token |
+| `EC2_HOST` | your EC2 public IP |
+| `EC2_USERNAME` | `ubuntu` |
+| `EC2_SSH_KEY` | full contents of csrag-key.pem |
+
+---
+
+## Step 12 — Push to Main
+
+```bash
+git add .
+git commit -m "deploy to ec2"
+git push origin main
+```
+
+GitHub Actions → CI Pipeline → 3 jobs → green → app is live at:
 ```
 http://YOUR_EC2_PUBLIC_IP:8000/docs
 ```
 
 ---
 
-## Step 9 — Add GitHub Secrets
-
-Go to your GitHub repo → **Settings → Secrets and variables → Actions** → **New repository secret**.
-
-Add these five secrets — same pattern as BasicRAG:
-
-| Secret name | Value |
-|-------------|-------|
-| `DOCKERHUB_USERNAME` | your Docker Hub username |
-| `DOCKERHUB_TOKEN` | Docker Hub access token (see below) |
-| `EC2_HOST` | your EC2 public IP (e.g., 54.123.45.67) |
-| `EC2_USERNAME` | `ubuntu` |
-| `EC2_SSH_KEY` | full contents of your csrag-key.pem file |
-
-**How to get DOCKERHUB_TOKEN:**
-1. Go to https://hub.docker.com → Account Settings → Security
-2. Click **New Access Token**
-3. Name: `github-actions`
-4. Permissions: Read, Write, Delete
-5. Generate → copy the token
-
-**How to get EC2_SSH_KEY:**
-- Open `csrag-key.pem` in a text editor
-- Copy everything including `-----BEGIN RSA PRIVATE KEY-----` and `-----END RSA PRIVATE KEY-----`
-- Paste that as the secret value
-
----
-
-## Step 10 — Push to Main and Watch It Deploy
-
-```bash
-git add .
-git commit -m "initial deployment setup"
-git push origin main
-```
-
-Go to **GitHub → your repo → Actions tab**.
-
-You will see the CI Pipeline running with 3 jobs:
-
-```
-Unit Tests ─────────────────────► pass
-     ↓
-Docker Build and Test ───────────► pass
-     ↓
-Deploy to EC2 ───────────────────► push to Docker Hub → SSH → docker pull + run
-```
-
-Every job must pass before the next one starts. Deploy only runs on pushes to main (not PRs).
-
----
-
-## What Happens on Every Push to Main
-
-1. GitHub starts a fresh Ubuntu runner
-2. **Job 1** — installs dependencies, runs all pytest tests with fake API keys
-3. **Job 2** — builds the Docker image, runs `python -c "from app.main import app"` to verify it loads
-4. **Job 3** — logs into Docker Hub, builds + pushes the image, SSHes into EC2, pulls the new image, stops/removes the old container, starts the new one with the `.env` file
-5. Old Docker images are pruned to save disk space
-
----
-
 ## Useful Commands on EC2
 
 ```bash
-# See all running containers
+# See running containers
 docker ps
 
-# Live app logs
+# App logs (live)
 docker logs -f csrag
 
-# Live postgres logs
+# Postgres logs
 docker logs -f csrag-postgres
 
-# Restart the app container
-docker restart csrag
+# Check memory and swap usage
+free -h
 
-# Manual redeploy without GitHub Actions
+# Check disk usage
+df -h
+docker system df
+
+# Manual redeploy
 docker pull YOUR_DOCKERHUB_USERNAME/csrag:latest
 docker stop csrag && docker rm csrag
 docker run -d --name csrag --restart always -p 8000:8000 \
   --env-file /home/ubuntu/.env --network csrag-net \
   YOUR_DOCKERHUB_USERNAME/csrag:latest
 
-# Check disk usage
-df -h
-docker system df
-
-# Clean up unused images
+# Clean up old images
 docker image prune -f
 ```
 
 ---
 
-## Cost
+## Cost (t3.small, 24/7)
 
 | Resource | Cost |
 |----------|------|
-| EC2 t3.medium (24/7) | ~$30/month |
+| EC2 t3.small (24/7) | ~$15/month |
 | EBS 20 GB | ~$2/month |
-| Docker Hub (public repo) | Free |
+| Docker Hub public repo | Free |
 | Qdrant free tier | Free |
 | Groq free tier | Free |
 | Tavily free tier | Free |
-| **Total** | **~$32/month** |
+| **Total** | **~$17/month** |
 
-Stop EC2 when not using it to save money:
+Stop EC2 when not using it:
 ```bash
-aws ec2 stop-instances --instance-ids YOUR_INSTANCE_ID
+# From AWS Console → EC2 → Instances → select instance → Instance State → Stop
 ```

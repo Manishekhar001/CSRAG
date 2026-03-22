@@ -20,13 +20,13 @@ class Settings(BaseSettings):
     memory_llm_temperature: float = 0.0
 
     ollama_base_url: str = "http://localhost:11434"
-    embedding_model: str = "mxbai-embed-large"
+    embedding_model: str = "nomic-embed-text"
 
     qdrant_url: str
     qdrant_api_key: str
     collection_name: str = "csrag_documents"
 
-    embedding_dimension: int = 1024
+    embedding_dimension: int = 768
 
     postgres_uri: str = "postgresql://postgres:postgres@localhost:5442/postgres?sslmode=disable"
 

@@ -25,16 +25,16 @@ class TestSettings:
         assert settings.llm_temperature == 0.0
 
     def test_settings_embedding_model_default(self):
-        """Test default embedding model is mxbai-embed-large."""
+        """Test default embedding model is nomic-embed-text."""
         from app.config import get_settings
         settings = get_settings()
-        assert settings.embedding_model == "mxbai-embed-large"
+        assert settings.embedding_model == "nomic-embed-text"
 
     def test_settings_embedding_dimension_default(self):
-        """Test default embedding dimension matches mxbai-embed-large output size."""
+        """Test default embedding dimension matches nomic-embed-text output size."""
         from app.config import get_settings
         settings = get_settings()
-        assert settings.embedding_dimension == 1024
+        assert settings.embedding_dimension == 768
 
     def test_settings_chunk_size_default(self):
         """Test default chunk size is configured correctly."""
