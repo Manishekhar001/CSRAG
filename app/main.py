@@ -7,8 +7,8 @@ load_dotenv()
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from langgraph.checkpoint.postgres import PostgresSaver
-from langgraph.store.postgres import PostgresStore
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from langgraph.store.postgres.aio import AsyncPostgresStore
 
 from app import __version__
 from app.api.routes import chat, documents, health, memory
@@ -30,39 +30,28 @@ async def lifespan(app: FastAPI):
     app.state.vector_store = VectorStoreService()
     logger.info("VectorStoreService ready")
 
-    logger.info("Connecting PostgresStore (LTM)...")
-    store_cm = PostgresStore.from_conn_string(settings.postgres_uri)
-    store = store_cm.__enter__()
-    store.setup()
-    app.state.store = store
-    logger.info("PostgresStore (LTM) ready")
+    logger.info("Connecting AsyncPostgresStore (LTM)...")
+    async with await AsyncPostgresStore.from_conn_string(settings.postgres_uri) as store:
+        await store.setup()
+        app.state.store = store
+        logger.info("AsyncPostgresStore (LTM) ready")
 
-    logger.info("Connecting PostgresSaver (STM checkpointer)...")
-    checkpointer_cm = PostgresSaver.from_conn_string(settings.postgres_uri)
-    checkpointer = checkpointer_cm.__enter__()
-    checkpointer.setup()
-    app.state.checkpointer = checkpointer
-    logger.info("PostgresSaver (STM checkpointer) ready")
+        logger.info("Connecting AsyncPostgresSaver (STM checkpointer)...")
+        async with await AsyncPostgresSaver.from_conn_string(settings.postgres_uri) as checkpointer:
+            await checkpointer.setup()
+            app.state.checkpointer = checkpointer
+            logger.info("AsyncPostgresSaver (STM checkpointer) ready")
 
-    logger.info("Compiling CSRAG graph...")
-    app.state.engine = CSRAGEngine(
-        vector_store=app.state.vector_store,
-        store=store,
-        checkpointer=checkpointer,
-    )
-    logger.info("CSRAG Engine ready — all services online")
+            logger.info("Compiling CSRAG graph...")
+            app.state.engine = CSRAGEngine(
+                vector_store=app.state.vector_store,
+                store=store,
+                checkpointer=checkpointer,
+            )
+            logger.info("CSRAG Engine ready — all services online")
 
-    yield
+            yield
 
-    logger.info("Shutting down — closing Postgres connections...")
-    try:
-        checkpointer_cm.__exit__(None, None, None)
-    except Exception as e:
-        logger.warning(f"Checkpointer close error: {e}")
-    try:
-        store_cm.__exit__(None, None, None)
-    except Exception as e:
-        logger.warning(f"Store close error: {e}")
     logger.info("Shutdown complete")
 
 
@@ -80,7 +69,7 @@ A production-grade conversational RAG system combining:
 
 ### Stack
 - **LLM**: Groq (llama-3.3-70b-versatile)
-- **Embeddings**: Ollama (mxbai-embed-large, local)
+- **Embeddings**: Ollama (nomic-embed-text, local)
 - **Vector DB**: Qdrant Cloud
 - **Memory DB**: PostgreSQL
 - **Web Search**: Tavily

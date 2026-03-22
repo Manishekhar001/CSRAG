@@ -26,7 +26,7 @@ async def list_memories(user_id: str, request: Request) -> MemoryListResponse:
 
     try:
         ns = ("user", user_id, "details")
-        items = store.search(ns)
+        items = await store.asearch(ns)
         memories = [MemoryItem(data=it.value.get("data", "")) for it in items]
         return MemoryListResponse(
             user_id=user_id,
@@ -56,9 +56,9 @@ async def delete_memories(user_id: str, request: Request) -> DeleteMemoryRespons
 
     try:
         ns = ("user", user_id, "details")
-        items = store.search(ns)
+        items = await store.asearch(ns)
         for item in items:
-            store.delete(ns, item.key)
+            await store.adelete(ns, item.key)
 
         logger.info(f"Deleted {len(items)} memories for user={user_id}")
         return DeleteMemoryResponse(

@@ -54,7 +54,7 @@ def _build_system_prompt(ltm_context: str, summary: str) -> str:
     return base
 
 
-def ltm_remember_node(
+async def ltm_remember_node(
     state: CSRAGState,
     config: RunnableConfig,
     *,
@@ -69,8 +69,8 @@ def ltm_remember_node(
     )
     user_message = last_human.content if last_human else ""
 
-    ltm.extract_and_store(store, user_id, user_message)
-    ltm_context = ltm.read_memories(store, user_id)
+    await ltm.extract_and_store(store, user_id, user_message)
+    ltm_context = await ltm.read_memories(store, user_id)
 
     logger.info(f"LTM remember done for user={user_id}")
     return {"user_id": user_id, "ltm_context": ltm_context}

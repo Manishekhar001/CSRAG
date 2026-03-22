@@ -61,9 +61,9 @@ class LTMService:
     def _namespace(user_id: str) -> tuple:
         return ("user", user_id, "details")
 
-    def read_memories(self, store, user_id: str) -> str:
+    async def read_memories(self, store, user_id: str) -> str:
         ns = self._namespace(user_id)
-        items = store.search(ns)
+        items = await store.asearch(ns)
         if not items:
             logger.debug(f"LTM: no memories found for user={user_id}")
             return "(empty)"
@@ -71,8 +71,8 @@ class LTMService:
         logger.debug(f"LTM: read {len(items)} memories for user={user_id}")
         return memories
 
-    def extract_and_store(self, store, user_id: str, user_message: str) -> int:
-        existing = self.read_memories(store, user_id)
+    async def extract_and_store(self, store, user_id: str, user_message: str) -> int:
+        existing = await self.read_memories(store, user_id)
         ns = self._namespace(user_id)
 
         try:
@@ -92,7 +92,7 @@ class LTMService:
         if decision.should_write:
             for mem in decision.memories:
                 if mem.is_new and mem.text.strip():
-                    store.put(ns, str(uuid.uuid4()), {"data": mem.text.strip()})
+                    await store.aput(ns, str(uuid.uuid4()), {"data": mem.text.strip()})
                     written += 1
                     logger.debug(f"LTM stored: '{mem.text.strip()}'")
 

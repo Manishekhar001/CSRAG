@@ -49,7 +49,7 @@ async def readiness_check(
     postgres_ok = False
     try:
         store = request.app.state.store
-        store.search(("__health__",))
+        items = await store.asearch(("__health__",))
         postgres_ok = True
     except Exception as e:
         logger.error(f"Postgres health check failed: {e}")

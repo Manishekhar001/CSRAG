@@ -52,10 +52,10 @@ async def chat(
             user_id=body.user_id,
         )
     except Exception as e:
-        logger.error(f"Chat query failed: {e}")
+        logger.error(f"Chat query failed: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Query processing failed: {str(e)}",
+            detail=f"Query processing failed: {type(e).__name__}: {str(e)}",
         )
 
     processing_time = (time.time() - start_time) * 1000
@@ -114,7 +114,7 @@ async def chat_stream(
             ):
                 yield chunk
         except Exception as e:
-            logger.error(f"Streaming error: {e}")
-            yield f"\n\n[Error: {str(e)}]"
+            logger.error(f"Streaming error: {e}", exc_info=True)
+            yield f"\n\n[Error: {type(e).__name__}: {str(e)}]"
 
     return StreamingResponse(generate(), media_type="text/plain")
