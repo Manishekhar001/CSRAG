@@ -23,7 +23,7 @@ def get_vector_store(request: Request) -> VectorStoreService:
     summary="Upload a document",
     description=(
         "Upload a PDF, TXT, or CSV file. The document is chunked, embedded "
-        "via Ollama (mxbai-embed-large), and stored in Qdrant Cloud."
+        "via Ollama (nomic-embed-text), and stored in Qdrant Cloud."
     ),
 )
 async def upload_document(
