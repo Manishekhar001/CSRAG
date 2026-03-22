@@ -57,6 +57,9 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title=settings.app_name,
+    # servers=[{"url": "/"}] makes Swagger UI use relative URLs — fixes
+    # "Failed to fetch" when accessing /docs from any host or IP address.
+    servers=[{"url": "/", "description": "Current server"}],
     description="""
 ## CSRAG — Corrective + Self-Reflective RAG with Memory
 
