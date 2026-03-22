@@ -1,7 +1,7 @@
 """Pytest configuration and fixtures."""
 
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -27,8 +27,8 @@ def mock_settings():
         settings.collection_name = "csrag_documents"
         settings.chunk_size = 900
         settings.chunk_overlap = 150
-        settings.embedding_model = "mxbai-embed-large"
-        settings.embedding_dimension = 1024
+        settings.embedding_model = "nomic-embed-text"
+        settings.embedding_dimension = 768
         settings.llm_model = "llama-3.3-70b-versatile"
         settings.llm_temperature = 0.0
         settings.memory_llm_model = "llama-3.3-70b-versatile"
@@ -69,8 +69,8 @@ def mock_embeddings():
     """Mock Ollama embeddings."""
     with patch("app.core.embeddings.get_embeddings") as mock:
         embeddings = MagicMock()
-        embeddings.embed_query.return_value = [0.1] * 1024
-        embeddings.embed_documents.return_value = [[0.1] * 1024]
+        embeddings.embed_query.return_value = [0.1] * 768
+        embeddings.embed_documents.return_value = [[0.1] * 768]
         mock.return_value = embeddings
         yield embeddings
 
@@ -97,37 +97,35 @@ def mock_vector_store(mock_qdrant_client, mock_embeddings):
 
 @pytest.fixture
 def mock_engine():
-    """Mock CSRAGEngine with working async query and stream methods."""
+    """Mock CSRAGEngine with trackable async query and stream methods."""
     with patch("app.main.CSRAGEngine") as mock_cls:
         engine = MagicMock()
         engine.health_check.return_value = True
 
-        async def _aquery(question, thread_id, user_id):
-            return {
-                "answer": "This is a test answer.",
-                "sources": [
-                    {
-                        "content": "Test content from document.",
-                        "metadata": {"source": "test.pdf"},
-                        "origin": "internal",
-                    }
-                ],
-                "crag_verdict": "CORRECT",
-                "crag_reason": "At least one chunk scored >= 0.7 (max=0.85)",
-                "issup": "fully_supported",
-                "evidence": ["Supporting quote from context."],
-                "isuse": "useful",
-                "use_reason": "Answer directly addresses the question.",
-                "retries": 0,
-                "rewrite_tries": 0,
-            }
+        engine.aquery = AsyncMock(return_value={
+            "answer": "This is a test answer.",
+            "sources": [
+                {
+                    "content": "Test content from document.",
+                    "metadata": {"source": "test.pdf"},
+                    "origin": "internal",
+                }
+            ],
+            "crag_verdict": "CORRECT",
+            "crag_reason": "At least one chunk scored >= 0.7 (max=0.85)",
+            "issup": "fully_supported",
+            "evidence": ["Supporting quote from context."],
+            "isuse": "useful",
+            "use_reason": "Answer directly addresses the question.",
+            "retries": 0,
+            "rewrite_tries": 0,
+        })
 
         async def _astream(question, thread_id, user_id):
             yield "This is "
             yield "a streamed "
             yield "answer."
 
-        engine.aquery = _aquery
         engine.astream = _astream
         mock_cls.return_value = engine
         yield engine

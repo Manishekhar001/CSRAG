@@ -175,7 +175,7 @@ class TestDocumentEndpoints:
         assert response.status_code == 200
 
     def test_upload_invalid_file_type(self, client):
-        """Test uploading unsupported file type."""
+        """Test uploading unsupported file type returns 400."""
         file_content = b"test content"
         files = {"file": ("test.xyz", io.BytesIO(file_content), "application/octet-stream")}
 
@@ -188,12 +188,12 @@ class TestDocumentEndpoints:
 
             assert response.status_code == 400
 
-    def test_upload_missing_filename_returns_400(self, client):
-        """Test uploading with empty filename returns 400."""
+    def test_upload_missing_filename_returns_422(self, client):
+        """Test that an empty filename is rejected at the validation layer."""
         files = {"file": ("", io.BytesIO(b"content"), "text/plain")}
         response = client.post("/documents/upload", files=files)
 
-        assert response.status_code == 400
+        assert response.status_code == 422
 
     def test_upload_success_message(self, client, sample_text_bytes):
         """Test successful upload returns a success message."""
