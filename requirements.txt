@@ -26,3 +26,7 @@ pydantic-settings
 python-dotenv
 
 httpx
+
+pytest
+pytest-asyncio
+pytest-cov
