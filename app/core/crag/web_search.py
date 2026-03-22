@@ -1,3 +1,4 @@
+import asyncio
 from functools import lru_cache
 
 from langchain_community.tools.tavily_search import TavilySearchResults
@@ -55,16 +56,21 @@ class WebSearchService:
             f"tavily max_results={settings.tavily_max_results}"
         )
 
-    def rewrite_query(self, question: str) -> str:
+    async def rewrite_query(self, question: str) -> str:
+        """Bug 4 fix: async LLM call."""
         logger.debug(f"Rewriting query for: {question[:80]}")
-        result: WebQuery = self._rewrite_chain.invoke({"question": question})
+        result: WebQuery = await self._rewrite_chain.ainvoke({"question": question})
         logger.info(f"Rewritten web query: {result.query}")
         return result.query
 
-    def search(self, query: str) -> list[Document]:
+    async def search(self, query: str) -> list[Document]:
+        """Bug 4 fix: Tavily invoke is blocking — offload to thread pool."""
         logger.info(f"Tavily web search: '{query}'")
         try:
-            results = self._tavily.invoke({"query": query})
+            loop = asyncio.get_event_loop()
+            results = await loop.run_in_executor(
+                None, lambda: self._tavily.invoke({"query": query})
+            )
         except Exception as e:
             logger.error(f"Tavily search failed: {e}")
             return []

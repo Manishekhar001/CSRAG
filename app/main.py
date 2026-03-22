@@ -31,13 +31,13 @@ async def lifespan(app: FastAPI):
     logger.info("VectorStoreService ready")
 
     logger.info("Connecting AsyncPostgresStore (LTM)...")
-    async with await AsyncPostgresStore.from_conn_string(settings.postgres_uri) as store:
+    async with AsyncPostgresStore.from_conn_string(settings.postgres_uri) as store:
         await store.setup()
         app.state.store = store
         logger.info("AsyncPostgresStore (LTM) ready")
 
         logger.info("Connecting AsyncPostgresSaver (STM checkpointer)...")
-        async with await AsyncPostgresSaver.from_conn_string(settings.postgres_uri) as checkpointer:
+        async with AsyncPostgresSaver.from_conn_string(settings.postgres_uri) as checkpointer:
             await checkpointer.setup()
             app.state.checkpointer = checkpointer
             logger.info("AsyncPostgresSaver (STM checkpointer) ready")

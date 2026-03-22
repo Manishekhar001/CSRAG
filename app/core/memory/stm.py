@@ -23,7 +23,8 @@ class STMSummarizer:
     def should_summarize(self, messages: list) -> bool:
         return len(messages) > self._threshold
 
-    def summarize(self, messages: list, existing_summary: str) -> tuple[str, list]:
+    async def summarize(self, messages: list, existing_summary: str) -> tuple[str, list]:
+        """Bug 4 fix: async LLM call."""
         if existing_summary:
             prompt_text = (
                 f"Existing summary:\n{existing_summary}\n\n"
@@ -43,7 +44,7 @@ class STMSummarizer:
             f"existing_summary={'yes' if existing_summary else 'no'}"
         )
 
-        response = self._llm.invoke(messages_for_summary)
+        response = await self._llm.ainvoke(messages_for_summary)
         new_summary: str = response.content
 
         messages_to_delete = messages[:-2]

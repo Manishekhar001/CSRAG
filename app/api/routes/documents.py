@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 
 from app.api.schemas import CollectionInfoResponse, DocumentUploadResponse, ErrorResponse
@@ -36,13 +38,27 @@ async def upload_document(
         raise HTTPException(status_code=400, detail="Filename is required.")
 
     try:
+        # Bug 6 fix: read file bytes first (fast, async), then offload the
+        # CPU/blocking I/O work (PDF parsing, chunking) to a thread pool so the
+        # event loop is never blocked.
+        file_bytes = await file.read()
+        filename = file.filename
+
+        loop = asyncio.get_event_loop()
         processor = DocumentProcessor()
-        chunks = processor.process_upload(file.file, file.filename)
-        document_ids = vector_store.add_documents(chunks)
-        logger.info(f"Indexed {file.filename}: {len(chunks)} chunks, {len(document_ids)} IDs")
+
+        def _process():
+            import io
+            return processor.process_upload(io.BytesIO(file_bytes), filename)
+
+        chunks = await loop.run_in_executor(None, _process)
+
+        document_ids = await loop.run_in_executor(None, vector_store.add_documents, chunks)
+
+        logger.info(f"Indexed {filename}: {len(chunks)} chunks, {len(document_ids)} IDs")
         return DocumentUploadResponse(
             message="Document uploaded and indexed successfully",
-            filename=file.filename,
+            filename=filename,
             chunks_created=len(chunks),
             document_ids=document_ids,
         )
@@ -64,7 +80,8 @@ async def collection_info(
     vector_store: VectorStoreService = Depends(get_vector_store),
 ) -> CollectionInfoResponse:
     try:
-        info = vector_store.get_collection_info()
+        loop = asyncio.get_event_loop()
+        info = await loop.run_in_executor(None, vector_store.get_collection_info)
         return CollectionInfoResponse(
             collection_name=info["name"],
             total_documents=info["points_count"],
@@ -89,7 +106,8 @@ async def delete_collection(
 ) -> dict:
     logger.warning("Collection deletion requested")
     try:
-        vector_store.delete_collection()
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, vector_store.delete_collection)
         return {"message": "Collection deleted successfully"}
     except Exception as e:
         logger.error(f"Collection deletion error: {e}")

@@ -1,3 +1,4 @@
+import asyncio
 from functools import lru_cache
 from typing import Literal
 
@@ -63,28 +64,34 @@ class CRAGEvaluator:
             f"upper_th={self._upper_th}, lower_th={self._lower_th}"
         )
 
-    def evaluate(
+    async def evaluate(
         self, question: str, docs: list[Document]
     ) -> tuple[CRAGVerdict, str, list[Document]]:
+        """Bug 4 fix: fully async; all doc evaluations run concurrently."""
         if not docs:
             logger.warning("CRAGEvaluator.evaluate called with empty docs list")
             return "INCORRECT", "No documents retrieved", []
 
-        scores: list[float] = []
-        good_docs: list[Document] = []
-
-        for doc in docs:
+        async def _score_doc(doc: Document) -> tuple[float, Document]:
             try:
-                result: DocEvalScore = self._eval_chain.invoke(
+                result: DocEvalScore = await self._eval_chain.ainvoke(
                     {"question": question, "chunk": doc.page_content}
                 )
-                scores.append(result.score)
                 logger.debug(f"Chunk scored {result.score:.2f} — {result.reason[:80]}")
-                if result.score > self._lower_th:
-                    good_docs.append(doc)
+                return result.score, doc
             except Exception as e:
                 logger.error(f"Doc eval failed for chunk: {e}")
-                scores.append(0.0)
+                return 0.0, doc
+
+        # Run all doc evaluations concurrently — no serial LLM calls
+        pairs = await asyncio.gather(*[_score_doc(d) for d in docs])
+
+        scores: list[float] = []
+        good_docs: list[Document] = []
+        for score, doc in pairs:
+            scores.append(score)
+            if score > self._lower_th:
+                good_docs.append(doc)
 
         if any(s >= self._upper_th for s in scores):
             verdict: CRAGVerdict = "CORRECT"

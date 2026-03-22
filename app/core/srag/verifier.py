@@ -113,12 +113,13 @@ class SRAGVerifier:
         self._revise_chain = _REVISE_PROMPT | llm
         logger.info("SRAGVerifier ready")
 
-    def verify_support(
+    async def verify_support(
         self, question: str, context: str, answer: str
     ) -> tuple[SupportVerdict, list[str]]:
+        """Bug 4 fix: async LLM call."""
         logger.debug("Verifying answer support...")
         try:
-            result: SupportDecision = self._support_chain.invoke(
+            result: SupportDecision = await self._support_chain.ainvoke(
                 {"question": question, "context": context, "answer": answer}
             )
             logger.info(
@@ -130,12 +131,13 @@ class SRAGVerifier:
             logger.error(f"Support verification failed: {e}")
             return "fully_supported", []
 
-    def verify_usefulness(
+    async def verify_usefulness(
         self, question: str, answer: str
     ) -> tuple[UsefulnessVerdict, str]:
+        """Bug 4 fix: async LLM call."""
         logger.debug("Verifying answer usefulness...")
         try:
-            result: UsefulnessDecision = self._usefulness_chain.invoke(
+            result: UsefulnessDecision = await self._usefulness_chain.ainvoke(
                 {"question": question, "answer": answer}
             )
             logger.info(f"SRAG usefulness: {result.verdict} — {result.reason}")
@@ -144,10 +146,11 @@ class SRAGVerifier:
             logger.error(f"Usefulness verification failed: {e}")
             return "useful", "Verification error — accepting answer as-is."
 
-    def revise_answer(self, question: str, context: str, answer: str) -> str:
+    async def revise_answer(self, question: str, context: str, answer: str) -> str:
+        """Bug 4 fix: async LLM call."""
         logger.info("Revising answer to improve factual grounding...")
         try:
-            result = self._revise_chain.invoke(
+            result = await self._revise_chain.ainvoke(
                 {"question": question, "context": context, "answer": answer}
             )
             revised = result.content if hasattr(result, "content") else str(result)

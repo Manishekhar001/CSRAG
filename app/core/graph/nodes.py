@@ -1,3 +1,5 @@
+import asyncio
+import json
 import re
 from functools import lru_cache
 from typing import Literal
@@ -54,6 +56,10 @@ def _build_system_prompt(ltm_context: str, summary: str) -> str:
     return base
 
 
+# ---------------------------------------------------------------------------
+# LTM
+# ---------------------------------------------------------------------------
+
 async def ltm_remember_node(
     state: CSRAGState,
     config: RunnableConfig,
@@ -75,6 +81,10 @@ async def ltm_remember_node(
     logger.info(f"LTM remember done for user={user_id}")
     return {"user_id": user_id, "ltm_context": ltm_context}
 
+
+# ---------------------------------------------------------------------------
+# Retrieval decision
+# ---------------------------------------------------------------------------
 
 class RetrieveDecision(BaseModel):
     should_retrieve: bool = Field(
@@ -102,7 +112,8 @@ _DECIDE_RETRIEVAL_PROMPT = ChatPromptTemplate.from_messages(
 )
 
 
-def decide_retrieval_node(state: CSRAGState) -> dict:
+async def decide_retrieval_node(state: CSRAGState) -> dict:
+    """Bug 4 fix: async LLM call."""
     last_human = next(
         (m for m in reversed(state["messages"]) if isinstance(m, HumanMessage)),
         None,
@@ -113,7 +124,7 @@ def decide_retrieval_node(state: CSRAGState) -> dict:
     decider = _DECIDE_RETRIEVAL_PROMPT | llm.with_structured_output(RetrieveDecision)
 
     try:
-        decision: RetrieveDecision = decider.invoke({"question": question})
+        decision: RetrieveDecision = await decider.ainvoke({"question": question})
         need_retrieval = decision.should_retrieve
     except Exception as e:
         logger.error(f"decide_retrieval failed: {e} — defaulting to True")
@@ -127,36 +138,59 @@ def decide_retrieval_node(state: CSRAGState) -> dict:
     }
 
 
-def generate_direct_node(state: CSRAGState) -> dict:
+# ---------------------------------------------------------------------------
+# Direct generation (no retrieval path)
+# ---------------------------------------------------------------------------
+
+async def generate_direct_node(state: CSRAGState) -> dict:
+    """
+    Bug 4 fix: async LLM call.
+    Bug 8 fix: SRAG fields set to 'skipped' — SRAG did NOT run on this path,
+               so we must not lie and claim full support/usefulness.
+    """
     llm = _get_chat_llm()
     system_msg = _build_system_prompt(
         state.get("ltm_context", ""),
         state.get("summary", ""),
     )
     messages = [SystemMessage(content=system_msg)] + list(state["messages"])
-    response = llm.invoke(messages)
+    response = await llm.ainvoke(messages)
     answer = response.content
     logger.info("generate_direct completed")
     return {
         "answer": answer,
-        "issup": "fully_supported",
-        "isuse": "useful",
+        # Bug 8 fix: honest labels — SRAG was not run on this path
+        "issup": "skipped",
+        "isuse": "skipped",
         "evidence": [],
-        "use_reason": "direct generation — no retrieval",
+        "use_reason": "direct generation — SRAG not applicable without retrieval context",
     }
 
 
-def retrieve_docs_node(state: CSRAGState, *, vector_store: VectorStoreService) -> dict:
+# ---------------------------------------------------------------------------
+# Document retrieval
+# ---------------------------------------------------------------------------
+
+async def retrieve_docs_node(state: CSRAGState, *, vector_store: VectorStoreService) -> dict:
+    """Bug 4 fix: blocking Qdrant call offloaded to thread pool."""
     query = state.get("retrieval_query") or state["question"]
     logger.info(f"Retrieving docs for: '{query[:80]}'")
-    docs = vector_store.search(query, k=settings.retrieval_k)
+    loop = asyncio.get_event_loop()
+    docs = await loop.run_in_executor(
+        None, lambda: vector_store.search(query, k=settings.retrieval_k)
+    )
     logger.info(f"Retrieved {len(docs)} docs")
     return {"docs": docs}
 
 
-def evaluate_docs_node(state: CSRAGState) -> dict:
+# ---------------------------------------------------------------------------
+# CRAG evaluation
+# ---------------------------------------------------------------------------
+
+async def evaluate_docs_node(state: CSRAGState) -> dict:
+    """Bug 4 fix: async — calls the now-async CRAGEvaluator."""
     evaluator = get_crag_evaluator()
-    verdict, reason, good_docs = evaluator.evaluate(
+    verdict, reason, good_docs = await evaluator.evaluate(
         question=state["question"],
         docs=state.get("docs", []),
     )
@@ -167,18 +201,28 @@ def evaluate_docs_node(state: CSRAGState) -> dict:
     }
 
 
-def rewrite_query_node(state: CSRAGState) -> dict:
+# ---------------------------------------------------------------------------
+# Web search
+# ---------------------------------------------------------------------------
+
+async def rewrite_query_node(state: CSRAGState) -> dict:
+    """Bug 4 fix: async."""
     svc = get_web_search_service()
-    web_query = svc.rewrite_query(state["question"])
+    web_query = await svc.rewrite_query(state["question"])
     return {"web_query": web_query}
 
 
-def web_search_node(state: CSRAGState) -> dict:
+async def web_search_node(state: CSRAGState) -> dict:
+    """Bug 4 fix: async."""
     svc = get_web_search_service()
     query = state.get("web_query") or state["question"]
-    web_docs = svc.search(query)
+    web_docs = await svc.search(query)
     return {"web_docs": web_docs}
 
+
+# ---------------------------------------------------------------------------
+# Context refinement — BATCH sentence scoring (Bug 3 fix)
+# ---------------------------------------------------------------------------
 
 def _decompose_to_sentences(text: str) -> list[str]:
     text = re.sub(r"\s+", " ", text).strip()
@@ -186,28 +230,41 @@ def _decompose_to_sentences(text: str) -> list[str]:
     return [s.strip() for s in sentences if len(s.strip()) > 20]
 
 
-class KeepOrDrop(BaseModel):
-    keep: bool = Field(
+class BatchFilterResult(BaseModel):
+    kept_indices: list[int] = Field(
         ...,
-        description="True if the sentence directly helps answer the question.",
+        description=(
+            "0-based indices of sentences (from the provided list) that directly "
+            "help answer the question. Return an empty list if none are relevant."
+        ),
     )
 
 
-_FILTER_PROMPT = ChatPromptTemplate.from_messages(
+_BATCH_FILTER_PROMPT = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            "You are a strict relevance filter.\n"
-            "Return keep=true ONLY if the sentence directly and specifically helps "
-            "answer the question.\n"
-            "Use ONLY the sentence provided. Output JSON only.",
+            "You are a strict relevance filter for a RAG system.\n"
+            "Given a question and a numbered list of sentences, return the 0-based "
+            "indices of ONLY the sentences that directly and specifically help answer "
+            "the question.\n"
+            "Discard sentences that are tangential, generic, or off-topic.\n"
+            "Output JSON only with key: kept_indices (list of integers).",
         ),
-        ("human", "Question: {question}\n\nSentence:\n{sentence}"),
+        (
+            "human",
+            "Question: {question}\n\nSentences (JSON array):\n{sentences_json}",
+        ),
     ]
 )
 
 
-def refine_context_node(state: CSRAGState) -> dict:
+async def refine_context_node(state: CSRAGState) -> dict:
+    """
+    Bug 3 fix: replaced N serial LLM calls (one per sentence) with a single
+               batched call that scores all sentences at once.
+    Bug 4 fix: fully async.
+    """
     verdict = state.get("crag_verdict", "CORRECT")
     good_docs = state.get("good_docs", [])
     web_docs = state.get("web_docs", [])
@@ -227,20 +284,24 @@ def refine_context_node(state: CSRAGState) -> dict:
 
     strips = _decompose_to_sentences(raw_context)
 
-    llm = _get_chat_llm()
-    filter_chain = _FILTER_PROMPT | llm.with_structured_output(KeepOrDrop)
+    if not strips:
+        return {"strips": [], "kept_strips": [], "refined_context": raw_context}
 
-    kept: list[str] = []
-    for sentence in strips:
-        try:
-            result: KeepOrDrop = filter_chain.invoke(
-                {"question": state["question"], "sentence": sentence}
-            )
-            if result.keep:
-                kept.append(sentence)
-        except Exception as e:
-            logger.error(f"Sentence filter error: {e}")
-            kept.append(sentence)
+    llm = _get_chat_llm()
+    filter_chain = _BATCH_FILTER_PROMPT | llm.with_structured_output(BatchFilterResult)
+
+    kept: list[str] = strips  # safe default — keep everything on failure
+    try:
+        result: BatchFilterResult = await filter_chain.ainvoke(
+            {
+                "question": state["question"],
+                "sentences_json": json.dumps(strips),
+            }
+        )
+        valid_indices = {i for i in result.kept_indices if 0 <= i < len(strips)}
+        kept = [strips[i] for i in sorted(valid_indices)]
+    except Exception as e:
+        logger.error(f"Batch sentence filter failed: {e} — keeping all strips")
 
     refined_context = "\n".join(kept)
     logger.info(
@@ -249,6 +310,10 @@ def refine_context_node(state: CSRAGState) -> dict:
     )
     return {"strips": strips, "kept_strips": kept, "refined_context": refined_context}
 
+
+# ---------------------------------------------------------------------------
+# Answer generation
+# ---------------------------------------------------------------------------
 
 _RAG_PROMPT = ChatPromptTemplate.from_messages(
     [
@@ -265,13 +330,14 @@ _RAG_PROMPT = ChatPromptTemplate.from_messages(
 )
 
 
-def generate_answer_node(state: CSRAGState) -> dict:
+async def generate_answer_node(state: CSRAGState) -> dict:
+    """Bug 4 fix: async LLM call."""
     llm = _get_chat_llm()
     system_prompt = _build_system_prompt(
         state.get("ltm_context", ""),
         state.get("summary", ""),
     )
-    response = (_RAG_PROMPT | llm).invoke(
+    response = await (_RAG_PROMPT | llm).ainvoke(
         {
             "system_prompt": system_prompt,
             "context": state.get("refined_context", ""),
@@ -283,9 +349,14 @@ def generate_answer_node(state: CSRAGState) -> dict:
     return {"answer": answer}
 
 
-def verify_support_node(state: CSRAGState) -> dict:
+# ---------------------------------------------------------------------------
+# SRAG verification & revision
+# ---------------------------------------------------------------------------
+
+async def verify_support_node(state: CSRAGState) -> dict:
+    """Bug 4 fix: async."""
     verifier = get_srag_verifier()
-    verdict, evidence = verifier.verify_support(
+    verdict, evidence = await verifier.verify_support(
         question=state["question"],
         context=state.get("refined_context", ""),
         answer=state["answer"],
@@ -293,9 +364,10 @@ def verify_support_node(state: CSRAGState) -> dict:
     return {"issup": verdict, "evidence": evidence}
 
 
-def revise_answer_node(state: CSRAGState) -> dict:
+async def revise_answer_node(state: CSRAGState) -> dict:
+    """Bug 4 fix: async."""
     verifier = get_srag_verifier()
-    revised = verifier.revise_answer(
+    revised = await verifier.revise_answer(
         question=state["question"],
         context=state.get("refined_context", ""),
         answer=state["answer"],
@@ -305,14 +377,19 @@ def revise_answer_node(state: CSRAGState) -> dict:
     return {"answer": revised, "retries": new_retries}
 
 
-def verify_usefulness_node(state: CSRAGState) -> dict:
+async def verify_usefulness_node(state: CSRAGState) -> dict:
+    """Bug 4 fix: async."""
     verifier = get_srag_verifier()
-    verdict, reason = verifier.verify_usefulness(
+    verdict, reason = await verifier.verify_usefulness(
         question=state["question"],
         answer=state["answer"],
     )
     return {"isuse": verdict, "use_reason": reason}
 
+
+# ---------------------------------------------------------------------------
+# Question rewrite
+# ---------------------------------------------------------------------------
 
 class RewrittenQuestion(BaseModel):
     query: str = Field(
@@ -337,11 +414,12 @@ _REWRITE_QUESTION_PROMPT = ChatPromptTemplate.from_messages(
 )
 
 
-def rewrite_question_node(state: CSRAGState) -> dict:
+async def rewrite_question_node(state: CSRAGState) -> dict:
+    """Bug 4 fix: async LLM call."""
     llm = _get_chat_llm()
     chain = _REWRITE_QUESTION_PROMPT | llm.with_structured_output(RewrittenQuestion)
     try:
-        result: RewrittenQuestion = chain.invoke({"question": state["question"]})
+        result: RewrittenQuestion = await chain.ainvoke({"question": state["question"]})
         new_query = result.query
     except Exception as e:
         logger.error(f"rewrite_question failed: {e} — using original question")
@@ -352,7 +430,12 @@ def rewrite_question_node(state: CSRAGState) -> dict:
     return {"retrieval_query": new_query, "rewrite_tries": new_tries}
 
 
-def stm_summarize_node(state: CSRAGState) -> dict:
+# ---------------------------------------------------------------------------
+# STM summarization
+# ---------------------------------------------------------------------------
+
+async def stm_summarize_node(state: CSRAGState) -> dict:
+    """Bug 4 fix: async summarize call."""
     answer = state.get("answer", "")
     ai_msg = AIMessage(content=answer)
 
@@ -361,7 +444,7 @@ def stm_summarize_node(state: CSRAGState) -> dict:
 
     if summarizer.should_summarize(all_messages):
         logger.info("STM threshold exceeded — summarising conversation")
-        new_summary, remove_ops = summarizer.summarize(
+        new_summary, remove_ops = await summarizer.summarize(
             messages=all_messages,
             existing_summary=state.get("summary", ""),
         )
@@ -369,6 +452,10 @@ def stm_summarize_node(state: CSRAGState) -> dict:
 
     return {"messages": [ai_msg]}
 
+
+# ---------------------------------------------------------------------------
+# Routing functions (pure logic — stay sync, no LLM calls)
+# ---------------------------------------------------------------------------
 
 def route_after_decide(
     state: CSRAGState,

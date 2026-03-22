@@ -28,7 +28,7 @@ class Settings(BaseSettings):
 
     embedding_dimension: int = 768
 
-    postgres_uri: str = "postgresql://postgres:postgres@localhost:5442/postgres?sslmode=disable"
+    postgres_uri: str = "postgresql://postgres:postgres@localhost:5432/postgres?sslmode=disable"
 
     tavily_api_key: str
     tavily_max_results: int = 5

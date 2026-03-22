@@ -64,14 +64,10 @@ class CSRAGEngine:
             "use_reason": "",
         }
 
-    def query(self, question: str, thread_id: str, user_id: str) -> dict:
-        logger.info(
-            f"sync query — thread={thread_id}, user={user_id}, "
-            f"q='{question[:80]}'"
-        )
-        config = self._build_config(thread_id, user_id)
-        result = self._graph.invoke(self._initial_state(question), config)
-        return self._format_result(result)
+    # Bug 5 fix: removed the sync query() method entirely.
+    # It was unsafe because ltm_remember_node is async — calling graph.invoke()
+    # (sync) with an async node causes a deadlock inside a running event loop.
+    # All callers should use aquery() instead.
 
     async def aquery(self, question: str, thread_id: str, user_id: str) -> dict:
         logger.info(
@@ -83,21 +79,36 @@ class CSRAGEngine:
         return self._format_result(result)
 
     async def astream(self, question: str, thread_id: str, user_id: str):
+        """
+        Bug 7 fix: switched from stream_mode='values' (which yielded full answer
+        blobs on each state change) to stream_mode='messages' which yields actual
+        message tokens/chunks as the LLM generates them.
+
+        We filter to only stream chunks from the answer-generation nodes so that
+        intermediate LLM calls (decide_retrieval, CRAG eval, SRAG, etc.) are not
+        leaked to the client.
+        """
         logger.info(
             f"streaming query — thread={thread_id}, user={user_id}, "
             f"q='{question[:80]}'"
         )
         config = self._build_config(thread_id, user_id)
-        last_answer = ""
-        async for state in self._graph.astream(
-            self._initial_state(question),
-            config,
-            stream_mode="values",
-        ):
-            answer = state.get("answer", "")
-            if answer and answer != last_answer:
-                yield answer
-                last_answer = answer
+
+        # Nodes whose LLM output is the final answer we want to stream
+        _ANSWER_NODES = {"generate_answer", "generate_direct"}
+
+        try:
+            async for msg, metadata in self._graph.astream(
+                self._initial_state(question),
+                config,
+                stream_mode="messages",
+            ):
+                node = metadata.get("langgraph_node", "")
+                if node in _ANSWER_NODES and hasattr(msg, "content") and msg.content:
+                    yield msg.content
+        except Exception as e:
+            logger.error(f"Streaming error: {e}", exc_info=True)
+            yield f"\n\n[Error: {type(e).__name__}: {str(e)}]"
 
     def health_check(self) -> bool:
         return self._graph is not None
