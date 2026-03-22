@@ -1,7 +1,9 @@
+# Core Framework
 fastapi
 uvicorn[standard]
 python-multipart
 
+# LangChain & AI
 langchain
 langchain-core
 langchain-community
@@ -12,21 +14,27 @@ langchain-text-splitters
 langgraph
 langgraph-checkpoint-postgres
 
+# Vector Database
 qdrant-client
 
+# PostgreSQL Driver
 psycopg[binary,pool]
 
+# Web Search
 tavily-python
 
+# Document Processing
 pypdf
 python-docx
 
+# Configuration & Validation
 pydantic
 pydantic-settings
 python-dotenv
 
+# HTTP Client
 httpx
 
+# Testing
 pytest
 pytest-asyncio
-pytest-cov

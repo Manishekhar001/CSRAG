@@ -1,300 +1,151 @@
-# CSRAG — AWS Deployment Manual Steps
+# CSRAG — EC2 Deployment Manual Steps
 
-Complete step-by-step guide. Do these ONCE before the CD pipeline can run.
+Follows the exact same pattern as BasicRAG project.
+One EC2 instance. Docker Hub as the registry. Plain docker run.
 
 ---
 
 ## Architecture
 
 ```
-Internet → ALB → ECS Fargate (CSRAG container)
-                       ↓
-              RDS PostgreSQL (LTM + STM)
-              Qdrant Cloud (vector DB — external)
-              Groq API (LLM — external)
-              Tavily API (web search — external)
-              EC2 t3.medium (Ollama embeddings — separate)
+Your machine
+     ↓  git push to main
+GitHub Actions
+  ├── JOB 1: Run all pytest tests
+  ├── JOB 2: Build Docker image + smoke test
+  └── JOB 3: Push to Docker Hub → SSH into EC2 → docker pull + run
+                                        ↓
+                              EC2 Instance (Ubuntu)
+                                ├── csrag container     (port 8000)
+                                ├── postgres container  (internal)
+                                └── Ollama native       (port 11434)
 ```
 
----
-
-## Step 1 — AWS Prerequisites
-
-### 1.1 Create IAM User for GitHub Actions
-
-1. Go to **IAM → Users → Create user**
-2. Username: `csrag-github-actions`
-3. Attach these policies directly:
-   - `AmazonEC2ContainerRegistryFullAccess`
-   - `AmazonECS_FullAccess`
-   - `AmazonVPCFullAccess` (for networking)
-4. After creation → **Security credentials → Create access key**
-5. Choose **Third-party service**
-6. Save `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` — you will add these to GitHub Secrets
+Public URL: http://YOUR_EC2_PUBLIC_IP:8000
 
 ---
 
-## Step 2 — Networking (VPC)
+## Step 1 — Create a Docker Hub Account and Repository
 
-### 2.1 Use default VPC or create one
+Docker Hub is free and is used as the container registry (same as BasicRAG).
 
-If using default VPC, note its **VPC ID** and **Subnet IDs** (need at least 2 in different AZs).
+1. Go to https://hub.docker.com and sign up (free)
+2. Click **Create Repository**
+3. Name: `csrag`
+4. Visibility: Public (free tier)
+5. Create
+
+Your image will be pushed as: `YOUR_USERNAME/csrag:latest`
+
+---
+
+## Step 2 — Launch EC2 Instance
+
+1. Go to **AWS Console → EC2 → Launch Instance**
+2. Fill in:
+   - **Name**: `csrag-server`
+   - **AMI**: Ubuntu Server 24.04 LTS
+   - **Instance type**: `t3.medium` (4 GB RAM — Ollama needs minimum 4 GB)
+     - t2.micro is free tier but only 1 GB RAM — too small for Ollama
+   - **Key pair**: Create new → name it `csrag-key` → download the `.pem` file
+   - **Security group**: Allow inbound:
+     - SSH (port 22) from My IP
+     - Custom TCP port 8000 from Anywhere (0.0.0.0/0)
+   - **Storage**: 20 GB
+
+3. Launch. Note the **Public IPv4 address**.
+
+---
+
+## Step 3 — SSH into EC2
 
 ```bash
-aws ec2 describe-vpcs --filters "Name=is-default,Values=true" --query "Vpcs[0].VpcId"
-aws ec2 describe-subnets --filters "Name=defaultForAz,Values=true" --query "Subnets[*].SubnetId"
+ssh -i csrag-key.pem ubuntu@YOUR_PUBLIC_IP
 ```
-
-### 2.2 Create Security Groups
-
-**ALB security group** (public-facing):
-1. EC2 → Security Groups → Create
-2. Name: `csrag-alb-sg`
-3. Inbound: HTTP 80 from 0.0.0.0/0, HTTPS 443 from 0.0.0.0/0
-4. Outbound: All traffic
-
-**ECS security group** (private):
-1. Name: `csrag-ecs-sg`
-2. Inbound: Port 8000 from `csrag-alb-sg` only
-3. Outbound: All traffic
-
-**RDS security group**:
-1. Name: `csrag-rds-sg`
-2. Inbound: Port 5432 from `csrag-ecs-sg` only
-3. Outbound: All traffic
-
-**Ollama security group**:
-1. Name: `csrag-ollama-sg`
-2. Inbound: Port 11434 from `csrag-ecs-sg` only, Port 22 from your IP
-3. Outbound: All traffic
 
 ---
 
-## Step 3 — ECR (Container Registry)
+## Step 4 — Install Docker on EC2
 
 ```bash
-aws ecr create-repository \
-  --repository-name csrag \
-  --region us-east-1 \
-  --image-scanning-configuration scanOnPush=true
-```
-
-Note the **repository URI** — looks like:
-`123456789.dkr.ecr.us-east-1.amazonaws.com/csrag`
-
----
-
-## Step 4 — RDS PostgreSQL (LTM + STM)
-
-1. Go to **RDS → Create database**
-2. Engine: PostgreSQL 16
-3. Template: Free tier (dev) or Production
-4. DB instance identifier: `csrag-postgres`
-5. Master username: `postgres`
-6. Master password: choose a strong password and note it
-7. Instance class: `db.t3.micro` (dev) or `db.t3.medium` (prod)
-8. Storage: 20 GB GP3
-9. VPC: your VPC
-10. Security group: `csrag-rds-sg`
-11. Public access: No
-12. Database name: `csrag`
-13. Create database
-
-After creation, note the **Endpoint** (looks like `csrag-postgres.xxxx.us-east-1.rds.amazonaws.com`).
-
-Build the `POSTGRES_URI`:
-```
-postgresql://postgres:YOUR_PASSWORD@csrag-postgres.xxxx.us-east-1.rds.amazonaws.com:5432/csrag
+sudo apt-get update -y
+sudo apt-get install -y docker.io
+sudo systemctl start docker
+sudo systemctl enable docker
+sudo usermod -aG docker ubuntu
+newgrp docker
+docker --version
 ```
 
 ---
 
-## Step 5 — EC2 for Ollama (Embeddings)
-
-Ollama must run on a machine the ECS container can reach. ECS Fargate cannot run Ollama directly.
-
-1. Go to **EC2 → Launch Instance**
-2. Name: `csrag-ollama`
-3. AMI: Ubuntu Server 24.04 LTS
-4. Instance type: `t3.medium` (minimum — mxbai-embed-large needs ~4GB RAM)
-5. Key pair: create or choose existing
-6. Security group: `csrag-ollama-sg`
-7. Storage: 20 GB
-8. In **Advanced details → User data**, paste this script:
+## Step 5 — Install Ollama on EC2
 
 ```bash
-#!/bin/bash
-apt-get update -y
 curl -fsSL https://ollama.com/install.sh | sh
-systemctl enable ollama
-systemctl start ollama
-sleep 10
-OLLAMA_HOST=0.0.0.0 ollama pull mxbai-embed-large
-```
 
-9. Launch instance
-
-Note the **Private IP** of the EC2 instance. This becomes your `OLLAMA_BASE_URL`:
-```
-http://PRIVATE_IP:11434
-```
-
-The Ollama service must listen on `0.0.0.0` to be reachable from ECS. SSH in and verify:
-```bash
-sudo systemctl edit ollama
-```
-Add:
-```ini
+sudo mkdir -p /etc/systemd/system/ollama.service.d
+sudo tee /etc/systemd/system/ollama.service.d/override.conf << 'EOF'
 [Service]
 Environment="OLLAMA_HOST=0.0.0.0"
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl restart ollama
+sleep 10
+
+ollama pull mxbai-embed-large
+ollama list
 ```
-Then: `sudo systemctl restart ollama`
 
 ---
 
-## Step 6 — ECS Cluster
+## Step 6 — Create the Docker Network and Start Postgres
 
-1. Go to **ECS → Clusters → Create cluster**
-2. Cluster name: `csrag-cluster`
-3. Infrastructure: **AWS Fargate** (serverless — no EC2 to manage)
-4. Create cluster
+The CSRAG container and Postgres container communicate over a Docker network.
+You only do this once — Postgres data persists in a Docker volume.
 
----
+```bash
+docker network create csrag-net
 
-## Step 7 — ECS Task Definition
+docker run -d \
+  --name csrag-postgres \
+  --restart always \
+  --network csrag-net \
+  -e POSTGRES_USER=postgres \
+  -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_DB=postgres \
+  -v postgres_data:/var/lib/postgresql/data \
+  postgres:16
 
-1. Go to **ECS → Task definitions → Create new task definition**
-2. Task definition family: `csrag-task`
-3. Launch type: Fargate
-4. CPU: 1 vCPU, Memory: 2 GB (minimum — increase for production)
-5. Task role: create new role `csrag-task-role` with `AmazonECSTaskExecutionRolePolicy`
-6. Container:
-   - Name: `csrag`
-   - Image URI: `YOUR_ECR_URI/csrag:latest`
-   - Port: 8000
-   - Essential: Yes
-7. Environment variables — add ALL of these:
+docker ps
+```
 
-| Key | Value |
-|-----|-------|
-| `GROQ_API_KEY` | your Groq key |
-| `QDRANT_URL` | your Qdrant Cloud URL |
-| `QDRANT_API_KEY` | your Qdrant key |
-| `TAVILY_API_KEY` | your Tavily key |
-| `POSTGRES_URI` | postgresql://postgres:PASSWORD@RDS_ENDPOINT:5432/csrag |
-| `OLLAMA_BASE_URL` | http://OLLAMA_EC2_PRIVATE_IP:11434 |
-| `LOG_LEVEL` | INFO |
-| `ALLOWED_ORIGINS` | * |
+Wait a few seconds, then verify Postgres is healthy:
 
-8. Log configuration:
-   - Log driver: awslogs
-   - Group: `/ecs/csrag`
-   - Region: `us-east-1`
-   - Stream prefix: `ecs`
-   - Create the log group in CloudWatch first: `aws logs create-log-group --log-group-name /ecs/csrag`
-
-9. Create task definition
+```bash
+docker exec csrag-postgres pg_isready -U postgres
+```
 
 ---
 
-## Step 8 — Application Load Balancer
+## Step 7 — Create the .env File on EC2
 
-1. Go to **EC2 → Load Balancers → Create load balancer**
-2. Type: Application Load Balancer
-3. Name: `csrag-alb`
-4. Scheme: Internet-facing
-5. IP type: IPv4
-6. VPC: your VPC
-7. Subnets: select at least 2 public subnets
-8. Security group: `csrag-alb-sg`
-9. Listeners: HTTP 80
-10. Target group:
-    - Name: `csrag-tg`
-    - Target type: IP (required for Fargate)
-    - Protocol: HTTP, Port: 8000
-    - Health check path: `/health`
-    - Healthy threshold: 2, Unhealthy: 3, Interval: 30s
-11. Create load balancer
+The `.env` lives only on the EC2. It is never in GitHub.
 
-Note the **DNS name** of the ALB — this is your public URL.
+```bash
+nano /home/ubuntu/.env
+```
 
----
-
-## Step 9 — ECS Service
-
-1. Go to **ECS → csrag-cluster → Create service**
-2. Launch type: Fargate
-3. Task definition: `csrag-task` (latest)
-4. Service name: `csrag-service`
-5. Desired tasks: 1 (scale up for production)
-6. VPC: your VPC
-7. Subnets: private subnets
-8. Security group: `csrag-ecs-sg`
-9. Public IP: disabled (ALB handles public traffic)
-10. Load balancer: Application Load Balancer → `csrag-alb`
-11. Target group: `csrag-tg`
-12. Create service
-
----
-
-## Step 10 — GitHub Secrets
-
-Go to your GitHub repository → **Settings → Secrets and variables → Actions → New repository secret**.
-
-Add these secrets:
-
-| Secret name | Value |
-|-------------|-------|
-| `AWS_ACCESS_KEY_ID` | from Step 1.1 |
-| `AWS_SECRET_ACCESS_KEY` | from Step 1.1 |
-
-The CD pipeline uses these to push to ECR and deploy to ECS.
-
----
-
-## Step 11 — Push and Verify
-
-1. Push to the `main` branch
-2. Watch **Actions** tab in GitHub — CI runs first, then CD
-3. CD will:
-   - Build the Docker image
-   - Push to ECR
-   - Update the ECS task definition with the new image
-   - Deploy to ECS (rolling update)
-4. Check ECS → csrag-cluster → csrag-service → Tasks
-5. Check CloudWatch → Log groups → `/ecs/csrag` for app logs
-6. Hit `http://YOUR_ALB_DNS/health` — should return `{"status": "healthy"}`
-7. Hit `http://YOUR_ALB_DNS/docs` — Swagger UI
-
----
-
-## Cost Estimate (us-east-1, per month)
-
-| Resource | Cost |
-|----------|------|
-| ECS Fargate (1 vCPU / 2GB, 24/7) | ~$35 |
-| RDS PostgreSQL db.t3.micro | ~$15 |
-| EC2 t3.medium (Ollama) | ~$30 |
-| ALB | ~$18 |
-| ECR storage | ~$1 |
-| CloudWatch logs | ~$2 |
-| **Total** | **~$101/month** |
-
-To reduce costs: stop EC2 and RDS when not needed. Use `db.t3.micro` for dev.
-
----
-
-## Environment Variable Reference (ECS Task Definition)
-
-All env vars the container needs — do not leave any blank:
+Paste and fill in your values:
 
 ```
-GROQ_API_KEY=
-QDRANT_URL=
-QDRANT_API_KEY=
-TAVILY_API_KEY=
-POSTGRES_URI=postgresql://postgres:PASSWORD@RDS_HOST:5432/csrag
-OLLAMA_BASE_URL=http://OLLAMA_PRIVATE_IP:11434
+GROQ_API_KEY=your_actual_groq_key
+QDRANT_URL=https://your-cluster.qdrant.io
+QDRANT_API_KEY=your_actual_qdrant_key
+TAVILY_API_KEY=your_actual_tavily_key
+POSTGRES_URI=postgresql://postgres:postgres@csrag-postgres:5432/postgres?sslmode=disable
+OLLAMA_BASE_URL=http://172.17.0.1:11434
 EMBEDDING_MODEL=mxbai-embed-large
 EMBEDDING_DIMENSION=1024
 COLLECTION_NAME=csrag_documents
@@ -315,4 +166,164 @@ LOG_LEVEL=INFO
 ALLOWED_ORIGINS=*
 API_HOST=0.0.0.0
 API_PORT=8000
+```
+
+Save: Ctrl+X → Y → Enter
+
+Note on OLLAMA_BASE_URL: `172.17.0.1` is the Docker bridge gateway — the IP that Docker containers use to reach the EC2 host. To confirm your exact IP:
+
+```bash
+ip route | grep docker
+# Look for something like: 172.17.0.0/16 dev docker0
+# The gateway is 172.17.0.1
+```
+
+---
+
+## Step 8 — Run the App for the First Time
+
+Pull and run the CSRAG container manually the first time:
+
+```bash
+docker pull YOUR_DOCKERHUB_USERNAME/csrag:latest
+
+docker run -d \
+  --name csrag \
+  --restart always \
+  -p 8000:8000 \
+  --env-file /home/ubuntu/.env \
+  --network csrag-net \
+  YOUR_DOCKERHUB_USERNAME/csrag:latest
+```
+
+Check it started:
+
+```bash
+docker ps
+docker logs csrag
+```
+
+Test from EC2:
+
+```bash
+curl http://localhost:8000/health
+```
+
+Test from your local browser:
+
+```
+http://YOUR_EC2_PUBLIC_IP:8000/docs
+```
+
+---
+
+## Step 9 — Add GitHub Secrets
+
+Go to your GitHub repo → **Settings → Secrets and variables → Actions** → **New repository secret**.
+
+Add these five secrets — same pattern as BasicRAG:
+
+| Secret name | Value |
+|-------------|-------|
+| `DOCKERHUB_USERNAME` | your Docker Hub username |
+| `DOCKERHUB_TOKEN` | Docker Hub access token (see below) |
+| `EC2_HOST` | your EC2 public IP (e.g., 54.123.45.67) |
+| `EC2_USERNAME` | `ubuntu` |
+| `EC2_SSH_KEY` | full contents of your csrag-key.pem file |
+
+**How to get DOCKERHUB_TOKEN:**
+1. Go to https://hub.docker.com → Account Settings → Security
+2. Click **New Access Token**
+3. Name: `github-actions`
+4. Permissions: Read, Write, Delete
+5. Generate → copy the token
+
+**How to get EC2_SSH_KEY:**
+- Open `csrag-key.pem` in a text editor
+- Copy everything including `-----BEGIN RSA PRIVATE KEY-----` and `-----END RSA PRIVATE KEY-----`
+- Paste that as the secret value
+
+---
+
+## Step 10 — Push to Main and Watch It Deploy
+
+```bash
+git add .
+git commit -m "initial deployment setup"
+git push origin main
+```
+
+Go to **GitHub → your repo → Actions tab**.
+
+You will see the CI Pipeline running with 3 jobs:
+
+```
+Unit Tests ─────────────────────► pass
+     ↓
+Docker Build and Test ───────────► pass
+     ↓
+Deploy to EC2 ───────────────────► push to Docker Hub → SSH → docker pull + run
+```
+
+Every job must pass before the next one starts. Deploy only runs on pushes to main (not PRs).
+
+---
+
+## What Happens on Every Push to Main
+
+1. GitHub starts a fresh Ubuntu runner
+2. **Job 1** — installs dependencies, runs all pytest tests with fake API keys
+3. **Job 2** — builds the Docker image, runs `python -c "from app.main import app"` to verify it loads
+4. **Job 3** — logs into Docker Hub, builds + pushes the image, SSHes into EC2, pulls the new image, stops/removes the old container, starts the new one with the `.env` file
+5. Old Docker images are pruned to save disk space
+
+---
+
+## Useful Commands on EC2
+
+```bash
+# See all running containers
+docker ps
+
+# Live app logs
+docker logs -f csrag
+
+# Live postgres logs
+docker logs -f csrag-postgres
+
+# Restart the app container
+docker restart csrag
+
+# Manual redeploy without GitHub Actions
+docker pull YOUR_DOCKERHUB_USERNAME/csrag:latest
+docker stop csrag && docker rm csrag
+docker run -d --name csrag --restart always -p 8000:8000 \
+  --env-file /home/ubuntu/.env --network csrag-net \
+  YOUR_DOCKERHUB_USERNAME/csrag:latest
+
+# Check disk usage
+df -h
+docker system df
+
+# Clean up unused images
+docker image prune -f
+```
+
+---
+
+## Cost
+
+| Resource | Cost |
+|----------|------|
+| EC2 t3.medium (24/7) | ~$30/month |
+| EBS 20 GB | ~$2/month |
+| Docker Hub (public repo) | Free |
+| Qdrant free tier | Free |
+| Groq free tier | Free |
+| Tavily free tier | Free |
+| **Total** | **~$32/month** |
+
+Stop EC2 when not using it to save money:
+```bash
+aws ec2 stop-instances --instance-ids YOUR_INSTANCE_ID
 ```
