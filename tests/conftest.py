@@ -5,6 +5,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from langgraph.store.postgres.aio import AsyncPostgresStore
 
 # Set test environment variables before importing app
 os.environ["GROQ_API_KEY"] = "test-groq-key"
@@ -134,55 +136,41 @@ def mock_engine():
 @pytest.fixture
 def mock_postgres_store():
     """Mock AsyncPostgresStore with async context manager pattern."""
-    with patch("app.main.AsyncPostgresStore") as mock_cls:
-        # Create a mock that works as an async context manager
-        store = MagicMock()
-        store.setup = AsyncMock(return_value=None)
-        store.asearch = AsyncMock(return_value=[])
-        store.aput = AsyncMock(return_value=None)
-        store.adelete = AsyncMock(return_value=None)
+    # Create the store mock first
+    store = MagicMock()
+    store.setup = AsyncMock(return_value=None)
+    store.asearch = AsyncMock(return_value=[])
+    store.aput = AsyncMock(return_value=None)
+    store.adelete = AsyncMock(return_value=None)
 
-        # Create an async context manager mock that returns the store
-        async def _aenter():
+    # Create an async context manager class that returns the store
+    class AsyncPostgresStoreMock:
+        async def __aenter__(self):
             return store
-
-        async def _aexit(*args):
+        async def __aexit__(self, *args):
             return False
 
-        store_cm = MagicMock()
-        store_cm.__aenter__ = _aenter
-        store_cm.__aexit__ = _aexit
-
-        async def from_conn_string(*args, **kwargs):
-            return store_cm
-
-        mock_cls.from_conn_string = from_conn_string
+    # Patch from_conn_string to return the context manager mock
+    with patch.object(AsyncPostgresStore, "from_conn_string", return_value=AsyncPostgresStoreMock()):
         yield store
 
 
 @pytest.fixture
 def mock_postgres_saver():
     """Mock AsyncPostgresSaver with async context manager pattern."""
-    with patch("app.main.AsyncPostgresSaver") as mock_cls:
-        # Create a mock that works as an async context manager
-        checkpointer = MagicMock()
-        checkpointer.setup = AsyncMock(return_value=None)
+    # Create the checkpointer mock first
+    checkpointer = MagicMock()
+    checkpointer.setup = AsyncMock(return_value=None)
 
-        # Create an async context manager mock that returns the checkpointer
-        async def _aenter():
+    # Create an async context manager class that returns the checkpointer
+    class AsyncPostgresSaverMock:
+        async def __aenter__(self):
             return checkpointer
-
-        async def _aexit(*args):
+        async def __aexit__(self, *args):
             return False
 
-        checkpointer_cm = MagicMock()
-        checkpointer_cm.__aenter__ = _aenter
-        checkpointer_cm.__aexit__ = _aexit
-
-        async def from_conn_string(*args, **kwargs):
-            return checkpointer_cm
-
-        mock_cls.from_conn_string = from_conn_string
+    # Patch from_conn_string to return the context manager mock
+    with patch.object(AsyncPostgresSaver, "from_conn_string", return_value=AsyncPostgresSaverMock()):
         yield checkpointer
 
 
