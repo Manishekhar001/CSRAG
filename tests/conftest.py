@@ -135,15 +135,28 @@ def mock_engine():
 def mock_postgres_store():
     """Mock AsyncPostgresStore with async context manager pattern."""
     with patch("app.main.AsyncPostgresStore") as mock_cls:
-        store_cm = MagicMock()
+        # Create a mock that works as an async context manager
         store = MagicMock()
         store.setup = AsyncMock(return_value=None)
         store.asearch = AsyncMock(return_value=[])
         store.aput = AsyncMock(return_value=None)
         store.adelete = AsyncMock(return_value=None)
-        store_cm.__aenter__ = AsyncMock(return_value=store)
-        store_cm.__aexit__ = AsyncMock(return_value=False)
-        mock_cls.from_conn_string = AsyncMock(return_value=store_cm)
+
+        # Create an async context manager mock that returns the store
+        async def _aenter():
+            return store
+
+        async def _aexit(*args):
+            return False
+
+        store_cm = MagicMock()
+        store_cm.__aenter__ = _aenter
+        store_cm.__aexit__ = _aexit
+
+        async def from_conn_string(*args, **kwargs):
+            return store_cm
+
+        mock_cls.from_conn_string = from_conn_string
         yield store
 
 
@@ -151,12 +164,25 @@ def mock_postgres_store():
 def mock_postgres_saver():
     """Mock AsyncPostgresSaver with async context manager pattern."""
     with patch("app.main.AsyncPostgresSaver") as mock_cls:
-        checkpointer_cm = MagicMock()
+        # Create a mock that works as an async context manager
         checkpointer = MagicMock()
         checkpointer.setup = AsyncMock(return_value=None)
-        checkpointer_cm.__aenter__ = AsyncMock(return_value=checkpointer)
-        checkpointer_cm.__aexit__ = AsyncMock(return_value=False)
-        mock_cls.from_conn_string = AsyncMock(return_value=checkpointer_cm)
+
+        # Create an async context manager mock that returns the checkpointer
+        async def _aenter():
+            return checkpointer
+
+        async def _aexit(*args):
+            return False
+
+        checkpointer_cm = MagicMock()
+        checkpointer_cm.__aenter__ = _aenter
+        checkpointer_cm.__aexit__ = _aexit
+
+        async def from_conn_string(*args, **kwargs):
+            return checkpointer_cm
+
+        mock_cls.from_conn_string = from_conn_string
         yield checkpointer
 
 

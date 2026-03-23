@@ -1,6 +1,6 @@
 """Tests for CRAG evaluator module."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -30,49 +30,49 @@ class TestCRAGEvaluator:
         from langchain_core.documents import Document
         return Document(page_content=content, metadata={"source": "test.pdf"})
 
-    def test_evaluate_returns_incorrect_when_no_docs(self, evaluator):
+    async def test_evaluate_returns_incorrect_when_no_docs(self, evaluator):
         """Test that empty doc list returns INCORRECT verdict."""
-        verdict, reason, good_docs = evaluator.evaluate("What is the policy?", [])
+        verdict, reason, good_docs = await evaluator.evaluate("What is the policy?", [])
         assert verdict == "INCORRECT"
         assert good_docs == []
 
-    def test_evaluate_returns_correct_when_high_score(self, evaluator):
+    async def test_evaluate_returns_correct_when_high_score(self, evaluator):
         """Test that a high-scoring chunk returns CORRECT verdict."""
         mock_result = MagicMock()
         mock_result.score = 0.85
         mock_result.reason = "Directly relevant."
         evaluator._eval_chain = MagicMock()
-        evaluator._eval_chain.invoke.return_value = mock_result
+        evaluator._eval_chain.ainvoke = AsyncMock(return_value=mock_result)
 
-        verdict, reason, good_docs = evaluator.evaluate("What is the policy?", [self._make_doc()])
+        verdict, reason, good_docs = await evaluator.evaluate("What is the policy?", [self._make_doc()])
         assert verdict == "CORRECT"
         assert len(good_docs) == 1
 
-    def test_evaluate_returns_incorrect_when_all_low_scores(self, evaluator):
+    async def test_evaluate_returns_incorrect_when_all_low_scores(self, evaluator):
         """Test that all low-scoring chunks return INCORRECT verdict."""
         mock_result = MagicMock()
         mock_result.score = 0.1
         mock_result.reason = "Not relevant."
         evaluator._eval_chain = MagicMock()
-        evaluator._eval_chain.invoke.return_value = mock_result
+        evaluator._eval_chain.ainvoke = AsyncMock(return_value=mock_result)
 
-        verdict, reason, good_docs = evaluator.evaluate("What is the policy?", [self._make_doc()])
+        verdict, reason, good_docs = await evaluator.evaluate("What is the policy?", [self._make_doc()])
         assert verdict == "INCORRECT"
         assert good_docs == []
 
-    def test_evaluate_returns_ambiguous_for_mid_range_scores(self, evaluator):
+    async def test_evaluate_returns_ambiguous_for_mid_range_scores(self, evaluator):
         """Test that mid-range scores return AMBIGUOUS verdict."""
         mock_result = MagicMock()
         mock_result.score = 0.5
         mock_result.reason = "Partially relevant."
         evaluator._eval_chain = MagicMock()
-        evaluator._eval_chain.invoke.return_value = mock_result
+        evaluator._eval_chain.ainvoke = AsyncMock(return_value=mock_result)
 
-        verdict, reason, good_docs = evaluator.evaluate("What is the policy?", [self._make_doc()])
+        verdict, reason, good_docs = await evaluator.evaluate("What is the policy?", [self._make_doc()])
         assert verdict == "AMBIGUOUS"
         assert len(good_docs) == 1
 
-    def test_evaluate_filters_good_docs_above_lower_threshold(self, evaluator):
+    async def test_evaluate_filters_good_docs_above_lower_threshold(self, evaluator):
         """Test that only docs scoring above the lower threshold are kept."""
         results = [
             MagicMock(score=0.5, reason="Partial"),
@@ -80,28 +80,28 @@ class TestCRAGEvaluator:
             MagicMock(score=0.8, reason="Highly relevant"),
         ]
         evaluator._eval_chain = MagicMock()
-        evaluator._eval_chain.invoke.side_effect = results
+        evaluator._eval_chain.ainvoke = AsyncMock(side_effect=results)
 
         docs = [self._make_doc() for _ in range(3)]
-        verdict, reason, good_docs = evaluator.evaluate("What is the policy?", docs)
+        verdict, reason, good_docs = await evaluator.evaluate("What is the policy?", docs)
         assert verdict == "CORRECT"
         assert len(good_docs) == 2
 
-    def test_evaluate_handles_eval_chain_error_gracefully(self, evaluator):
+    async def test_evaluate_handles_eval_chain_error_gracefully(self, evaluator):
         """Test that LLM errors during evaluation are handled gracefully."""
         evaluator._eval_chain = MagicMock()
-        evaluator._eval_chain.invoke.side_effect = Exception("LLM timeout")
+        evaluator._eval_chain.ainvoke = AsyncMock(side_effect=Exception("LLM timeout"))
 
-        verdict, reason, good_docs = evaluator.evaluate("What is the policy?", [self._make_doc()])
+        verdict, reason, good_docs = await evaluator.evaluate("What is the policy?", [self._make_doc()])
         assert verdict == "INCORRECT"
 
-    def test_evaluate_reason_contains_max_score(self, evaluator):
+    async def test_evaluate_reason_contains_max_score(self, evaluator):
         """Test that the verdict reason string contains the maximum score."""
         mock_result = MagicMock()
         mock_result.score = 0.9
         mock_result.reason = "Directly answers."
         evaluator._eval_chain = MagicMock()
-        evaluator._eval_chain.invoke.return_value = mock_result
+        evaluator._eval_chain.ainvoke = AsyncMock(return_value=mock_result)
 
-        verdict, reason, good_docs = evaluator.evaluate("What is the policy?", [self._make_doc()])
+        verdict, reason, good_docs = await evaluator.evaluate("What is the policy?", [self._make_doc()])
         assert "0.90" in reason

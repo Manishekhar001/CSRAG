@@ -15,7 +15,7 @@ class TestSTMSummarizer:
             llm = MagicMock()
             response = MagicMock()
             response.content = "This is a summary of the conversation."
-            llm.invoke.return_value = response
+            llm.ainvoke = AsyncMock(return_value=response)
             mock_cls.return_value = llm
             with patch("app.core.memory.stm.get_settings") as mock_settings:
                 settings = MagicMock()
@@ -49,32 +49,32 @@ class TestSTMSummarizer:
         messages = [self._make_message(f"msg {i}") for i in range(6)]
         assert stm.should_summarize(messages) is False
 
-    def test_summarize_returns_new_summary_string(self, stm):
+    async def test_summarize_returns_new_summary_string(self, stm):
         """Test that summarize returns a non-empty summary string."""
         messages = [self._make_message(f"msg {i}") for i in range(8)]
-        new_summary, remove_ops = stm.summarize(messages, "")
+        new_summary, remove_ops = await stm.summarize(messages, "")
         assert isinstance(new_summary, str)
         assert len(new_summary) > 0
 
-    def test_summarize_keeps_last_two_messages(self, stm):
+    async def test_summarize_keeps_last_two_messages(self, stm):
         """Test that summarize marks all but the last two messages for deletion."""
         messages = [self._make_message(f"msg {i}") for i in range(8)]
-        new_summary, remove_ops = stm.summarize(messages, "")
+        new_summary, remove_ops = await stm.summarize(messages, "")
         assert len(remove_ops) == len(messages) - 2
 
-    def test_summarize_extends_existing_summary(self, stm):
+    async def test_summarize_extends_existing_summary(self, stm):
         """Test that summarize incorporates an existing summary."""
         messages = [self._make_message(f"msg {i}") for i in range(8)]
-        new_summary, _ = stm.summarize(messages, "Existing summary text.")
+        new_summary, _ = await stm.summarize(messages, "Existing summary text.")
         assert isinstance(new_summary, str)
-        stm._llm.invoke.assert_called_once()
-        call_args = stm._llm.invoke.call_args[0][0]
+        stm._llm.ainvoke.assert_called_once()
+        call_args = stm._llm.ainvoke.call_args[0][0]
         assert any("Existing summary" in str(m.content) for m in call_args)
 
-    def test_summarize_without_existing_summary(self, stm):
+    async def test_summarize_without_existing_summary(self, stm):
         """Test that summarize works correctly with no prior summary."""
         messages = [self._make_message(f"msg {i}") for i in range(8)]
-        new_summary, remove_ops = stm.summarize(messages, "")
+        new_summary, remove_ops = await stm.summarize(messages, "")
         assert isinstance(new_summary, str)
 
 
