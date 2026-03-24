@@ -2,8 +2,11 @@ import time
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from langchain_core.messages import AIMessage, HumanMessage
 
 from app.api.schemas import (
+    ChatHistoryResponse,
+    ChatMessage,
     ChatRequest,
     ChatResponse,
     ErrorResponse,
@@ -18,6 +21,10 @@ router = APIRouter(prefix="/chat", tags=["Chat"])
 
 def get_engine(request: Request) -> CSRAGEngine:
     return request.app.state.engine
+
+
+def get_checkpointer(request: Request):
+    return request.app.state.checkpointer
 
 
 @router.post(
@@ -118,3 +125,65 @@ async def chat_stream(
             yield f"\n\n[Error: {type(e).__name__}: {str(e)}]"
 
     return StreamingResponse(generate(), media_type="text/plain")
+
+
+@router.get(
+    "/history/{thread_id}",
+    response_model=ChatHistoryResponse,
+    responses={
+        404: {"model": ErrorResponse, "description": "Thread not found"},
+        500: {"model": ErrorResponse, "description": "Retrieval error"},
+    },
+    summary="Get conversation history",
+    description=(
+        "Retrieve the full message history for a conversation thread. "
+        "Returns all human and assistant messages in chronological order, "
+        "plus the rolling STM summary if the conversation has been compressed. "
+        "Returns 404 if the thread_id has never been used."
+    ),
+)
+async def get_chat_history(
+    thread_id: str,
+    request: Request,
+) -> ChatHistoryResponse:
+    logger.info(f"History request — thread={thread_id}")
+    checkpointer = get_checkpointer(request)
+
+    try:
+        config = {"configurable": {"thread_id": thread_id}}
+        checkpoint_tuple = await checkpointer.aget_tuple(config)
+    except Exception as e:
+        logger.error(f"History retrieval failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to retrieve history: {type(e).__name__}: {str(e)}",
+        )
+
+    if checkpoint_tuple is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No conversation found for thread_id='{thread_id}'",
+        )
+
+    channel_values = checkpoint_tuple.checkpoint.get("channel_values", {})
+    raw_messages = channel_values.get("messages", [])
+    summary = channel_values.get("summary", "")
+
+    messages: list[ChatMessage] = []
+    for msg in raw_messages:
+        if isinstance(msg, HumanMessage):
+            messages.append(ChatMessage(role="human", content=msg.content))
+        elif isinstance(msg, AIMessage):
+            messages.append(ChatMessage(role="assistant", content=msg.content))
+
+    logger.info(
+        f"History returned — thread={thread_id}, "
+        f"messages={len(messages)}, summary={'yes' if summary else 'no'}"
+    )
+
+    return ChatHistoryResponse(
+        thread_id=thread_id,
+        messages=messages,
+        summary=summary,
+        message_count=len(messages),
+    )

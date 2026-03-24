@@ -82,12 +82,30 @@ class ChatResponse(BaseModel):
     processing_time_ms: float = Field(..., description="End-to-end latency in ms")
     crag_verdict: str = Field("", description="CRAG retrieval quality verdict: CORRECT | AMBIGUOUS | INCORRECT")
     crag_reason: str = Field("", description="CRAG verdict justification")
-    issup: str = Field("", description="SRAG support verdict: fully_supported | partially_supported | no_support | skipped")
+    issup: str = Field("", description="SRAG support verdict: fully_supported | partially_supported | no_support")
     evidence: list[str] = Field(default_factory=list, description="Evidence quotes from the context supporting the answer")
-    isuse: str = Field("", description="SRAG usefulness verdict: useful | not_useful | skipped")
+    isuse: str = Field("", description="SRAG usefulness verdict: useful | not_useful")
     use_reason: str = Field("", description="SRAG usefulness justification")
     retries: int = Field(0, description="Number of answer revision iterations")
     rewrite_tries: int = Field(0, description="Number of question rewrite iterations")
+
+
+class ChatMessage(BaseModel):
+    role: Literal["human", "assistant"] = Field(
+        ..., description="Who sent this message: human or assistant."
+    )
+    content: str = Field(..., description="Message content.")
+
+
+class ChatHistoryResponse(BaseModel):
+    thread_id: str = Field(..., description="Conversation thread identifier")
+    messages: list[ChatMessage] = Field(
+        ..., description="Full message history for this thread, oldest first."
+    )
+    summary: str = Field(
+        "", description="Rolling STM summary if the conversation has been compressed."
+    )
+    message_count: int = Field(..., description="Number of messages in the current history.")
 
 
 class MemoryItem(BaseModel):

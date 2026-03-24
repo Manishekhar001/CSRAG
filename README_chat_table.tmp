@@ -1,0 +1,6 @@
+### Chat
+| Method | Path | Description |
+|---|---|---|
+| POST | `/chat` | Full CSRAG pipeline query |
+| POST | `/chat/stream` | Streaming answer token by token |
+| GET | `/chat/history/{thread_id}` | Retrieve full message history for a thread |

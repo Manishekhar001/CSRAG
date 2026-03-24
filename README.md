@@ -51,7 +51,7 @@ CSRAG/
 │   │   └── routes/
 │   │       ├── health.py          # GET /health, GET /health/ready
 │   │       ├── documents.py       # POST /documents/upload, GET /documents/info, DELETE /documents/collection
-│   │       ├── chat.py            # POST /chat, POST /chat/stream
+│   │       ├── chat.py            # POST /chat, POST /chat/stream, GET /chat/history/{thread_id}
 │   │       └── memory.py          # GET /memory/{user_id}, DELETE /memory/{user_id}
 │   │
 │   ├── core/
@@ -201,6 +201,7 @@ pytest tests/ -v --asyncio-mode=auto
 |---|---|---|
 | POST | `/chat` | Full CSRAG pipeline query |
 | POST | `/chat/stream` | Streaming answer token by token |
+| GET | `/chat/history/{thread_id}` | Retrieve full message history for a thread |
 
 ### Memory
 | Method | Path | Description |
@@ -237,6 +238,30 @@ Response fields:
 | `retries` | Answer revision loop counter |
 | `rewrite_tries` | Question rewrite loop counter |
 | `processing_time_ms` | End-to-end latency |
+
+## Example — retrieve chat history
+
+```bash
+curl http://localhost:8000/chat/history/thread-001
+```
+
+Response:
+
+```json
+{
+  "thread_id": "thread-001",
+  "messages": [
+    {"role": "human", "content": "What is the refund policy?"},
+    {"role": "assistant", "content": "The refund window is 30 days..."},
+    {"role": "human", "content": "Can I get a partial refund?"},
+    {"role": "assistant", "content": "Yes, partial refunds are available..."}
+  ],
+  "summary": "",
+  "message_count": 4
+}
+```
+
+If the conversation was compressed by STM, the `messages` list will contain only the most recent 2 messages and the `summary` field will hold the compressed history of all earlier turns.
 
 ---
 
