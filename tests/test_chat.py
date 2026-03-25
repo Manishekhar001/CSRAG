@@ -317,6 +317,39 @@ class TestChatHistory:
 
         assert data["message_count"] == len(data["messages"])
 
+    def _make_serialized_checkpoint_tuple(self, messages: list, summary: str = "") -> MagicMock:
+        """Build a mock CheckpointTuple with serialized dict messages (as returned by actual checkpointer)."""
+        msg_dicts = []
+        for msg in messages:
+            if msg["role"] == "human":
+                msg_dicts.append({"type": "human", "content": msg["content"]})
+            else:
+                msg_dicts.append({"type": "ai", "content": msg["content"]})
+
+        checkpoint = {"channel_values": {"messages": msg_dicts, "summary": summary}}
+        tup = MagicMock()
+        tup.checkpoint = checkpoint
+        return tup
+
+    def test_history_handles_serialized_messages(self, client, mock_postgres_saver):
+        """Test that history correctly handles serialized dict messages from checkpointer."""
+        mock_postgres_saver.aget_tuple = AsyncMock(
+            return_value=self._make_serialized_checkpoint_tuple([
+                {"role": "human", "content": "Hello from dict"},
+                {"role": "assistant", "content": "Hi there from dict!"},
+            ])
+        )
+
+        response = client.get("/chat/history/thread-test-001")
+        data = response.json()
+
+        assert response.status_code == 200
+        assert len(data["messages"]) == 2
+        assert data["messages"][0]["role"] == "human"
+        assert data["messages"][0]["content"] == "Hello from dict"
+        assert data["messages"][1]["role"] == "assistant"
+        assert data["messages"][1]["content"] == "Hi there from dict!"
+
 
 class TestChatValidation:
     """Test chat request validation."""

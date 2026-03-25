@@ -171,10 +171,19 @@ async def get_chat_history(
 
     messages: list[ChatMessage] = []
     for msg in raw_messages:
+        # Handle both actual message objects and serialized dicts from checkpointer
         if isinstance(msg, HumanMessage):
             messages.append(ChatMessage(role="human", content=msg.content))
         elif isinstance(msg, AIMessage):
             messages.append(ChatMessage(role="assistant", content=msg.content))
+        elif isinstance(msg, dict):
+            # Serialized message from checkpointer
+            msg_type = msg.get("type", "").lower()
+            content = msg.get("content", "")
+            if msg_type == "human":
+                messages.append(ChatMessage(role="human", content=content))
+            elif msg_type == "ai":
+                messages.append(ChatMessage(role="assistant", content=content))
 
     logger.info(
         f"History returned — thread={thread_id}, "
