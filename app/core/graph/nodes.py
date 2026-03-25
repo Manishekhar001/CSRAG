@@ -189,12 +189,14 @@ async def generate_direct_node(state: CSRAGState) -> dict:
     issup is set to 'skipped' because there is no retrieved context to
     verify grounding against — only verify_usefulness runs.
     """
+    import uuid
+
     llm = _get_chat_llm()
     system_msg = _build_system_prompt(
         state.get("ltm_context", ""),
         state.get("summary", ""),
     )
-    messages = [SystemMessage(content=system_msg)] + list(state["messages"])
+    messages = [SystemMessage(content=system_msg, id=str(uuid.uuid4()))] + list(state["messages"])
     response = await llm.ainvoke(messages)
     answer = response.content
     logger.info("generate_direct completed — routing to verify_usefulness")
@@ -373,11 +375,14 @@ _RAG_PROMPT = ChatPromptTemplate.from_messages(
 
 async def generate_answer_node(state: CSRAGState) -> dict:
     """Bug 4 fix: async LLM call."""
+    import uuid
+
     llm = _get_chat_llm()
     system_prompt = _build_system_prompt(
         state.get("ltm_context", ""),
         state.get("summary", ""),
     )
+    # Inject system prompt with a unique ID to ensure proper message tracking
     response = await (_RAG_PROMPT | llm).ainvoke(
         {
             "system_prompt": system_prompt,
@@ -477,8 +482,10 @@ async def rewrite_question_node(state: CSRAGState) -> dict:
 
 async def stm_summarize_node(state: CSRAGState) -> dict:
     """Bug 4 fix: async summarize call."""
+    import uuid
+
     answer = state.get("answer", "")
-    ai_msg = AIMessage(content=answer)
+    ai_msg = AIMessage(content=answer, id=str(uuid.uuid4()))
 
     summarizer = get_stm_summarizer()
     all_messages = list(state["messages"]) + [ai_msg]

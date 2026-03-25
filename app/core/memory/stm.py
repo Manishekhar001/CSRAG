@@ -1,6 +1,7 @@
 from functools import lru_cache
+import uuid
 
-from langchain_core.messages import HumanMessage, RemoveMessage
+from langchain_core.messages import HumanMessage, RemoveMessage, AIMessage
 from langchain_groq import ChatGroq
 
 from app.config import get_settings
@@ -37,7 +38,7 @@ class STMSummarizer:
                 "Capture key facts, user preferences, and conclusions."
             )
 
-        messages_for_summary = list(messages) + [HumanMessage(content=prompt_text)]
+        messages_for_summary = list(messages) + [HumanMessage(content=prompt_text, id=str(uuid.uuid4()))]
 
         logger.info(
             f"Summarising conversation — {len(messages)} messages, "
@@ -47,8 +48,9 @@ class STMSummarizer:
         response = await self._llm.ainvoke(messages_for_summary)
         new_summary: str = response.content
 
+        # Keep only the last 2 messages, remove the rest
         messages_to_delete = messages[:-2]
-        remove_ops = [RemoveMessage(id=m.id) for m in messages_to_delete]
+        remove_ops = [RemoveMessage(id=m.id) for m in messages_to_delete if m.id]
 
         logger.info(
             f"Summary generated — deleted {len(remove_ops)} messages, "

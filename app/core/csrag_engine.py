@@ -1,4 +1,5 @@
 from langchain_core.messages import HumanMessage
+import uuid
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.store.postgres.aio import AsyncPostgresStore
 
@@ -39,7 +40,7 @@ class CSRAGEngine:
     @staticmethod
     def _initial_state(question: str) -> dict:
         return {
-            "messages": [HumanMessage(content=question)],
+            "messages": [HumanMessage(content=question, id=str(uuid.uuid4()))],
             "summary": "",
             "user_id": "",
             "ltm_context": "",
