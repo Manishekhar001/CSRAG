@@ -188,17 +188,17 @@ class TestDocumentEndpoints:
 
             assert response.status_code == 400
 
-    def test_upload_missing_filename_returns_400(self, client):
-        """Test that an empty filename returns 400.
+    def test_upload_missing_filename_returns_422(self, client):
+        """Test that an empty filename returns 422.
 
-        The route explicitly raises HTTPException(400) when file.filename is
-        empty — this is application-level validation, NOT Pydantic schema
-        validation, so 400 is correct here (not 422).
+        FastAPI's UploadFile validation catches empty filenames at the
+        framework level before the endpoint code runs, returning 422
+        (Unprocessable Entity) instead of 400.
         """
         files = {"file": ("", io.BytesIO(b"content"), "text/plain")}
         response = client.post("/documents/upload", files=files)
 
-        assert response.status_code == 400
+        assert response.status_code == 422
 
     def test_upload_success_message(self, client, sample_text_bytes):
         """Test successful upload returns a success message."""
