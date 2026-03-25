@@ -42,6 +42,11 @@ class VectorStoreService:
         logger.info(f"VectorStoreService ready — collection: {self.collection_name}")
 
     def _ensure_collection(self) -> None:
+        """
+        Check if the collection exists in Qdrant. If not, create an empty one.
+        This is called at startup AND after any operation that may have deleted
+        the collection (e.g. delete_collection()).
+        """
         try:
             info = self.client.get_collection(self.collection_name)
             logger.info(
@@ -65,7 +70,7 @@ class VectorStoreService:
                         distance=Distance.COSINE,
                     ),
                 )
-                logger.info(f"Collection '{self.collection_name}' created")
+                logger.info(f"Collection '{self.collection_name}' created (empty)")
             else:
                 raise
 
@@ -86,7 +91,29 @@ class VectorStoreService:
             logger.warning("search called with empty query")
             return []
         logger.debug(f"Searching Qdrant: '{query[:60]}...' (k={k})")
-        results = self.vector_store.similarity_search(query=query, k=k)
+        try:
+            results = self.vector_store.similarity_search(query=query, k=k)
+        except Exception as e:
+            err_str = str(e).lower()
+            # Qdrant raises when the collection is empty or missing entirely.
+            # "no vectors" happens on empty collections.
+            # "not found" / "doesn't exist" happens if the collection was
+            # deleted externally without going through delete_collection().
+            if (
+                "no vectors" in err_str
+                or "not found" in err_str
+                or "doesn't exist" in err_str
+                or "does not exist" in err_str
+                or "collection" in err_str
+            ):
+                logger.warning(
+                    f"Qdrant search returned no results "
+                    f"(empty or missing collection): {e}"
+                )
+                # Self-heal: recreate the collection so future uploads work.
+                self._ensure_collection()
+                return []
+            raise
         logger.debug(f"Found {len(results)} results")
         return results
 
@@ -107,9 +134,29 @@ class VectorStoreService:
         )
 
     def delete_collection(self) -> None:
+        """
+        Delete the collection and immediately recreate an empty one.
+
+        Without the recreation step, any subsequent search() call would hit
+        a missing collection and crash. Always leaving an empty collection
+        in place means the app stays healthy at all times — uploads work
+        immediately after deletion without requiring an app restart.
+        """
         logger.warning(f"Deleting collection: {self.collection_name}")
         self.client.delete_collection(collection_name=self.collection_name)
         logger.info(f"Collection '{self.collection_name}' deleted")
+
+        # Immediately recreate so the collection is always present.
+        self.client.create_collection(
+            collection_name=self.collection_name,
+            vectors_config=VectorParams(
+                size=settings.embedding_dimension,
+                distance=Distance.COSINE,
+            ),
+        )
+        logger.info(
+            f"Empty collection '{self.collection_name}' recreated after deletion"
+        )
 
     def get_collection_info(self) -> dict:
         try:

@@ -25,8 +25,10 @@ class CSRAGState(TypedDict):
     kept_strips: list[str]
     refined_context: str
     answer: str
-    issup: Literal["fully_supported", "partially_supported", "no_support", ""]
+    # "skipped" means the direct-generation path ran — no retrieved context
+    # existed to verify support against, so verify_support was not called.
+    issup: Literal["fully_supported", "partially_supported", "no_support", "skipped", ""]
     evidence: list[str]
     retries: int
-    isuse: Literal["useful", "not_useful", ""]
+    isuse: Literal["useful", "not_useful", "skipped", ""]
     use_reason: str

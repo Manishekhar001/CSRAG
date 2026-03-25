@@ -188,12 +188,17 @@ class TestDocumentEndpoints:
 
             assert response.status_code == 400
 
-    def test_upload_missing_filename_returns_422(self, client):
-        """Test that an empty filename is rejected at the validation layer."""
+    def test_upload_missing_filename_returns_400(self, client):
+        """Test that an empty filename returns 400.
+
+        The route explicitly raises HTTPException(400) when file.filename is
+        empty — this is application-level validation, NOT Pydantic schema
+        validation, so 400 is correct here (not 422).
+        """
         files = {"file": ("", io.BytesIO(b"content"), "text/plain")}
         response = client.post("/documents/upload", files=files)
 
-        assert response.status_code == 422
+        assert response.status_code == 400
 
     def test_upload_success_message(self, client, sample_text_bytes):
         """Test successful upload returns a success message."""

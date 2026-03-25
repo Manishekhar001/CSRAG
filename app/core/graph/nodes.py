@@ -90,9 +90,14 @@ class RetrieveDecision(BaseModel):
     should_retrieve: bool = Field(
         ...,
         description=(
-            "True if answering requires specific facts from ingested documents. "
-            "False for general knowledge questions."
+            "True ONLY if the question requires specific private/domain/company "
+            "documents that were uploaded by the user. "
+            "False for anything an LLM already knows from training data."
         ),
+    )
+    reason: str = Field(
+        ...,
+        description="One-sentence reason for your decision.",
     )
 
 
@@ -100,12 +105,35 @@ _DECIDE_RETRIEVAL_PROMPT = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            "You decide whether document retrieval is needed to answer the question.\n"
-            "Return JSON with key: should_retrieve (boolean).\n\n"
-            "Guidelines:\n"
-            "  True  — question requires specific facts from company/domain documents.\n"
-            "  False — question is general knowledge or a simple definition.\n"
-            "  When unsure, choose True.",
+            """You are a routing classifier. Your job is to decide whether the user's question needs \
+retrieval from a private document store, or whether an LLM can answer it directly from its training data.
+
+RETURN False (no retrieval) when the question is:
+  - General world knowledge: history, science, geography, current affairs, famous people, \
+country leaders, sports, technology concepts, definitions, how-things-work questions.
+  - Math or logic problems.
+  - Coding questions.
+  - Anything a knowledgeable person would know without reading a specific private document.
+
+RETURN True (needs retrieval) ONLY when the question:
+  - Asks about content from a document the user uploaded (policy docs, manuals, reports, contracts).
+  - Uses phrases like "our", "my company", "the document", "the report", "according to the file".
+  - Is about proprietary internal data that no public source would have.
+
+EXAMPLES:
+  Q: "Who is the Prime Minister of India?"  → False  (world knowledge)
+  Q: "What is machine learning?"            → False  (general concept)
+  Q: "When was Python created?"             → False  (historical fact)
+  Q: "What is our refund policy?"           → True   (private company doc)
+  Q: "Summarise the uploaded contract"      → True   (uploaded document)
+  Q: "What does clause 4.2 say?"           → True   (private document)
+  Q: "Who won the 2023 World Cup?"          → False  (world knowledge)
+  Q: "What are our employee leave rules?"   → True   (private HR doc)
+
+When genuinely unsure and no company/private context is implied → return False.
+Only choose True when you are confident the question targets private uploaded content.
+
+Return JSON with keys: should_retrieve (boolean), reason (string).""",
         ),
         ("human", "Question: {question}"),
     ]
@@ -126,11 +154,16 @@ async def decide_retrieval_node(state: CSRAGState) -> dict:
     try:
         decision: RetrieveDecision = await decider.ainvoke({"question": question})
         need_retrieval = decision.should_retrieve
+        logger.info(
+            f"Decide retrieval: need_retrieval={need_retrieval}, "
+            f"reason='{decision.reason}', q='{question[:80]}'"
+        )
     except Exception as e:
-        logger.error(f"decide_retrieval failed: {e} — defaulting to True")
-        need_retrieval = True
-
-    logger.info(f"Decide retrieval: need_retrieval={need_retrieval}, q='{question[:80]}'")
+        # On failure default to False — general knowledge path is safer
+        # than triggering a full retrieval pipeline that will certainly
+        # find nothing and waste 3+ LLM calls.
+        logger.error(f"decide_retrieval failed: {e} — defaulting to False")
+        need_retrieval = False
     return {
         "question": question,
         "need_retrieval": need_retrieval,
@@ -144,9 +177,14 @@ async def decide_retrieval_node(state: CSRAGState) -> dict:
 
 async def generate_direct_node(state: CSRAGState) -> dict:
     """
-    Bug 4 fix: async LLM call.
-    Bug 8 fix: SRAG fields set to 'skipped' — SRAG did NOT run on this path,
-               so we must not lie and claim full support/usefulness.
+    Generates an answer directly from the LLM's training knowledge —
+    no Qdrant retrieval, no CRAG, no web search.
+
+    After this node the graph routes to verify_usefulness (not stm_summarize).
+    If the LLM's direct answer is judged 'not_useful', the pipeline falls
+    back to rewrite_question → retrieve_docs → full CRAG + SRAG path.
+    issup is set to 'skipped' because there is no retrieved context to
+    verify grounding against — only verify_usefulness runs.
     """
     llm = _get_chat_llm()
     system_msg = _build_system_prompt(
@@ -156,14 +194,14 @@ async def generate_direct_node(state: CSRAGState) -> dict:
     messages = [SystemMessage(content=system_msg)] + list(state["messages"])
     response = await llm.ainvoke(messages)
     answer = response.content
-    logger.info("generate_direct completed")
+    logger.info("generate_direct completed — routing to verify_usefulness")
     return {
         "answer": answer,
-        # Bug 8 fix: honest labels — SRAG was not run on this path
+        # No retrieved context exists so support verification is skipped.
+        # verify_usefulness will still run and can trigger the retrieval
+        # fallback if the answer is not useful.
         "issup": "skipped",
-        "isuse": "skipped",
         "evidence": [],
-        "use_reason": "direct generation — SRAG not applicable without retrieval context",
     }
 
 
@@ -484,6 +522,11 @@ def route_after_usefulness(
 ) -> Literal["rewrite_question", "stm_summarize"]:
     isuse = state.get("isuse", "useful")
     rewrite_tries = state.get("rewrite_tries", 0)
+    # Trigger the retrieval fallback when:
+    #   - usefulness verdict is 'not_useful' (covers both direct and RAG paths)
+    #   - we have not yet exhausted rewrite attempts
+    # This means a poor direct-generation answer will fall back to the full
+    # CRAG + SRAG retrieval pipeline automatically.
     if isuse == "not_useful" and rewrite_tries < settings.max_rewrite_tries:
         return "rewrite_question"
     return "stm_summarize"

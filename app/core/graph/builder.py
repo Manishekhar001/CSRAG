@@ -69,7 +69,10 @@ def build_graph(
         },
     )
 
-    builder.add_edge("generate_direct", "stm_summarize")
+    # Direct answers now go through verify_usefulness before finishing.
+    # If the answer is judged 'not_useful', the pipeline automatically
+    # falls back via rewrite_question → retrieve_docs → full CRAG + SRAG.
+    builder.add_edge("generate_direct", "verify_usefulness")
     builder.add_edge("retrieve_docs", "evaluate_docs")
 
     builder.add_conditional_edges(

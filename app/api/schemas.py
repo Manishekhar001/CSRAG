@@ -82,7 +82,7 @@ class ChatResponse(BaseModel):
     processing_time_ms: float = Field(..., description="End-to-end latency in ms")
     crag_verdict: str = Field("", description="CRAG retrieval quality verdict: CORRECT | AMBIGUOUS | INCORRECT")
     crag_reason: str = Field("", description="CRAG verdict justification")
-    issup: str = Field("", description="SRAG support verdict: fully_supported | partially_supported | no_support")
+    issup: str = Field("", description="SRAG support verdict: fully_supported | partially_supported | no_support | skipped")
     evidence: list[str] = Field(default_factory=list, description="Evidence quotes from the context supporting the answer")
     isuse: str = Field("", description="SRAG usefulness verdict: useful | not_useful")
     use_reason: str = Field("", description="SRAG usefulness justification")
