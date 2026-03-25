@@ -76,7 +76,7 @@ class LTMService:
         ns = self._namespace(user_id)
 
         try:
-            decision: MemoryDecision = self._extractor.invoke(
+            decision: MemoryDecision = await self._extractor.ainvoke(
                 [
                     SystemMessage(
                         content=_MEMORY_PROMPT.format(existing_memories=existing)

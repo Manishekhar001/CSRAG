@@ -138,7 +138,7 @@ class TestLTMService:
         memory.text = "User's name is Nitish."
         decision.memories = [memory]
         ltm._extractor = MagicMock()
-        ltm._extractor.invoke.return_value = decision
+        ltm._extractor.ainvoke = AsyncMock(return_value=decision)
 
         written = await ltm.extract_and_store(store, "user-123", "Hi, I am Nitish.")
         assert written == 1
@@ -155,7 +155,7 @@ class TestLTMService:
         memory.text = "User is Nitish."
         decision.memories = [memory]
         ltm._extractor = MagicMock()
-        ltm._extractor.invoke.return_value = decision
+        ltm._extractor.ainvoke = AsyncMock(return_value=decision)
 
         written = await ltm.extract_and_store(store, "user-123", "I am Nitish.")
         assert written == 0
@@ -169,7 +169,7 @@ class TestLTMService:
         decision.should_write = False
         decision.memories = []
         ltm._extractor = MagicMock()
-        ltm._extractor.invoke.return_value = decision
+        ltm._extractor.ainvoke = AsyncMock(return_value=decision)
 
         written = await ltm.extract_and_store(store, "user-123", "Hello!")
         assert written == 0
@@ -178,7 +178,7 @@ class TestLTMService:
         """Test graceful error handling when LLM extraction fails."""
         store = self._make_store(search_result=[])
         ltm._extractor = MagicMock()
-        ltm._extractor.invoke.side_effect = Exception("LLM error")
+        ltm._extractor.ainvoke = AsyncMock(side_effect=Exception("LLM error"))
 
         written = await ltm.extract_and_store(store, "user-123", "Hello!")
         assert written == 0
