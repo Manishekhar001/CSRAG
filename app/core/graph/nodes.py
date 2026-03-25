@@ -106,32 +106,35 @@ _DECIDE_RETRIEVAL_PROMPT = ChatPromptTemplate.from_messages(
         (
             "system",
             """You are a routing classifier. Your job is to decide whether the user's question needs \
-retrieval from a private document store, or whether an LLM can answer it directly from its training data.
+retrieval from a document store (or web search fallback), or whether an LLM can answer it directly from its training data.
 
 RETURN False (no retrieval) when the question is:
-  - General world knowledge: history, science, geography, current affairs, famous people, \
-country leaders, sports, technology concepts, definitions, how-things-work questions.
+  - General world knowledge: history, science, geography, well-established facts.
   - Math or logic problems.
   - Coding questions.
-  - Anything a knowledgeable person would know without reading a specific private document.
+  - Static information that doesn't change (e.g., "Who invented the telephone?", "When was Python created?")
 
-RETURN True (needs retrieval) ONLY when the question:
+RETURN True (needs retrieval) when the question:
   - Asks about content from a document the user uploaded (policy docs, manuals, reports, contracts).
   - Uses phrases like "our", "my company", "the document", "the report", "according to the file".
   - Is about proprietary internal data that no public source would have.
+  - Contains TIME-SENSITIVE keywords asking for CURRENT information: "current", "present", "latest", "now", "today", "2025", "2026", "recent", "just announced", "who is the captain now", "current leader", etc.
+  - Asks about CURRENT sports team captains, CURRENT political office holders, CURRENT rankings, CURRENT events.
 
 EXAMPLES:
-  Q: "Who is the Prime Minister of India?"  → False  (world knowledge)
-  Q: "What is machine learning?"            → False  (general concept)
-  Q: "When was Python created?"             → False  (historical fact)
-  Q: "What is our refund policy?"           → True   (private company doc)
-  Q: "Summarise the uploaded contract"      → True   (uploaded document)
-  Q: "What does clause 4.2 say?"           → True   (private document)
-  Q: "Who won the 2023 World Cup?"          → False  (world knowledge)
-  Q: "What are our employee leave rules?"   → True   (private HR doc)
+  Q: "Who is the Prime Minister of India?"        → True   (time-sensitive - may have changed since training)
+  Q: "What is machine learning?"                   → False  (general concept)
+  Q: "When was Python created?"                    → False  (historical fact)
+  Q: "What is our refund policy?"                  → True   (private company doc)
+  Q: "Summarise the uploaded contract"             → True   (uploaded document)
+  Q: "Who won the 2023 World Cup?"                → False  (historical event)
+  Q: "Who is the current captain of Indian team?"  → True   (time-sensitive, may change)
+  Q: "Present Indian cricket team captains"        → True   (time-sensitive)
+  Q: "What are our employee leave rules?"          → True   (private HR doc)
+  Q: "Current CEO of Apple"                        → True   (time-sensitive leadership)
+  Q: "Latest iPhone features 2025"                 → True   (time-sensitive, recent tech)
 
-When genuinely unsure and no company/private context is implied → return False.
-Only choose True when you are confident the question targets private uploaded content.
+When unsure and the question implies CURRENT/PRESENT/2025+ context → return True to ensure fresh data.
 
 Return JSON with keys: should_retrieve (boolean), reason (string).""",
         ),
