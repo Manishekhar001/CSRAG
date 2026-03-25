@@ -50,6 +50,7 @@ async def chat(
         f"Chat — thread={body.thread_id}, user={body.user_id}, "
         f"q='{body.question[:80]}'"
     )
+    logger.debug(f"Chat config: thread_id={body.thread_id}, user_id={body.user_id}")
     start_time = time.time()
 
     try:
@@ -151,7 +152,30 @@ async def get_chat_history(
 
     try:
         config = {"configurable": {"thread_id": thread_id}}
+        logger.debug(f"Retrieving checkpoint with config: {config}")
         checkpoint_tuple = await checkpointer.aget_tuple(config)
+        logger.debug(f"Checkpoint tuple result: {checkpoint_tuple is not None}")
+
+        # DEBUG: List recent checkpoints to help diagnose
+        if checkpoint_tuple is None:
+            logger.warning(f"No checkpoint found for thread_id='{thread_id}' - checking recent checkpoints")
+            try:
+                import psycopg
+                from app.config import get_settings
+                settings = get_settings()
+                conn = await psycopg.AsyncConnection.connect(settings.postgres_uri)
+                async with conn.cursor() as cur:
+                    await cur.execute("""
+                        SELECT thread_id, checkpoint_id, created_at
+                        FROM checkpoints
+                        ORDER BY created_at DESC
+                        LIMIT 5
+                    """)
+                    rows = await cur.fetchall()
+                    logger.warning(f"Recent checkpoints: {rows}")
+                await conn.close()
+            except Exception as debug_e:
+                logger.error(f"Debug query failed: {debug_e}")
     except Exception as e:
         logger.error(f"History retrieval failed: {e}", exc_info=True)
         raise HTTPException(

@@ -114,6 +114,30 @@ jobs:
                   username: ${{ secrets.EC2_USERNAME }}
                   key: ${{ secrets.EC2_SSH_KEY }}
                   script: |
+                      # Ensure Docker network exists
+                      docker network create csrag-net 2>/dev/null || true
+
+                      # Start PostgreSQL if not running
+                      if ! docker ps | grep -q csrag-postgres; then
+                          if docker ps -a | grep -q csrag-postgres; then
+                              docker start csrag-postgres
+                          else
+                              docker run -d \
+                                --name csrag-postgres \
+                                --network csrag-net \
+                                --restart always \
+                                -e POSTGRES_USER=postgres \
+                                -e POSTGRES_PASSWORD=postgres \
+                                -e POSTGRES_DB=postgres \
+                                -v postgres_data:/var/lib/postgresql/data \
+                                postgres:16
+                          fi
+                      fi
+
+                      # Wait for Postgres to be ready
+                      sleep 5
+
+                      # Deploy CSRAG app
                       docker pull ${{ secrets.DOCKERHUB_USERNAME }}/csrag:latest
                       docker stop csrag || true
                       docker rm csrag || true
